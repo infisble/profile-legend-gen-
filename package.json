@@ -1,0 +1,18 @@
+{
+  "name": "profile-gen",
+  "version": "1.0.0",
+  "private": true,
+  "scripts": {
+    "install:all": "npm --prefix backend install && npm --prefix frontend install",
+    "dev:backend": "npm --prefix backend run dev",
+    "dev:frontend": "npm --prefix frontend start",
+    "dev": "concurrently \"npm run dev:backend\" \"npm run dev:frontend\""
+  },
+  "keywords": [],
+  "author": "",
+  "license": "ISC",
+  "description": "Profile generator UI + Node backend + Gemini integration",
+  "dependencies": {
+    "concurrently": "^9.2.1"
+  }
+}
