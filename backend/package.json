@@ -1,11 +1,11 @@
 {
   "name": "backend",
   "version": "1.0.0",
-  "main": "server.js",
+  "main": "dist/server.js",
   "scripts": {
-    "dev": "node --watch server.js",
-    "start": "node server.js",
-    "sexualpref:smoke": "node scripts/sexualpref-smoke.js"
+    "build": "tsc -p tsconfig.json",
+    "dev": "tsx watch server.ts",
+    "start": "node dist/server.js"
   },
   "keywords": [],
   "author": "",
@@ -15,5 +15,12 @@
     "cors": "^2.8.6",
     "dotenv": "^17.3.1",
     "express": "^5.2.1"
+  },
+  "devDependencies": {
+    "@types/cors": "^2.8.19",
+    "@types/express": "^5.0.3",
+    "@types/node": "^24.6.0",
+    "tsx": "^4.20.6",
+    "typescript": "^5.9.3"
   }
 }

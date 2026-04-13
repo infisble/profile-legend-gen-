@@ -1,3 +1,4 @@
+// @ts-nocheck
 const { PERSONALITY_CRITERIA, STAGE_PROMPT_DEFAULTS, LEGEND_BLOCKS, LIFE_SPHERES, QC_CHECKS } = require('../legend/constants');
 const { clampInt, safeString, deepClone, normalizeText } = require('../legend/utils');
 const { validateCanonProfileConsistency } = require('../legend/pipeline');

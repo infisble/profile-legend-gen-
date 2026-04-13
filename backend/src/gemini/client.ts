@@ -1,3 +1,5 @@
+import type { ExtendedError, HttpHeaders } from '../types';
+
 const { safeString } = require('../legend/utils');
 
 const DEFAULT_GEMINI_BASE = 'https://generativelanguage.googleapis.com';
@@ -159,12 +161,12 @@ function extractFinishReason(payload) {
   return safeString(payload?.candidates?.[0]?.finishReason).trim();
 }
 
-function buildGeminiEmptyContentError(raw, parsed) {
+function buildGeminiEmptyContentError(raw, parsed): ExtendedError {
   const detail = safeString(raw).trim().slice(0, 1200);
   const finishReason = extractFinishReason(parsed);
   const error = new Error(
     finishReason ? `Gemini returned empty content (${finishReason}). Raw: ${detail}` : `Gemini returned empty content. Raw: ${detail}`
-  );
+  ) as ExtendedError;
 
   if (finishReason === 'PROHIBITED_CONTENT') {
     error.code = 'GEMINI_PROHIBITED_CONTENT';
@@ -186,7 +188,7 @@ async function generateGeminiJson({ prompt, generationType = 'type-pro', request
   }
 
   const url = buildGenerateUrl(config);
-  const headers = {
+  const headers: HttpHeaders = {
     'Content-Type': 'application/json'
   };
 

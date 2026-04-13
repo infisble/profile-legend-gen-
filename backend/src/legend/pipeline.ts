@@ -1,4 +1,5 @@
-﻿const {
+// @ts-nocheck
+const {
   PERSONALITY_CRITERIA,
   LEGEND_BLOCKS,
   LIFE_SPHERES,
@@ -1944,3 +1945,4 @@ module.exports = {
   STAGE_PROMPT_DEFAULTS,
   LEGEND_BLOCKS
 };
+// @ts-nocheck

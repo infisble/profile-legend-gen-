@@ -1,6 +1,7 @@
 ﻿const express = require('express');
 const cors = require('cors');
 const dotenv = require('dotenv');
+const fs = require('node:fs');
 const path = require('node:path');
 const { randomUUID } = require('node:crypto');
 const {
@@ -14,14 +15,24 @@ const {
 const { STAGE_ORDER, runStagePipeline, runCanonProfileConsistencyCheck } = require('./src/gemini/stage-runner');
 const { generateGeminiJson } = require('./src/gemini/client');
 
-dotenv.config({ path: path.join(__dirname, '.env') });
+function resolveEnvFilePath(): string | null {
+  const candidates = [path.join(__dirname, '.env'), path.join(__dirname, '..', '.env')];
+  return candidates.find((candidate) => fs.existsSync(candidate)) || null;
+}
 
-function readEnv(name, fallback = '') {
+const envFilePath = resolveEnvFilePath();
+if (envFilePath) {
+  dotenv.config({ path: envFilePath });
+} else {
+  dotenv.config();
+}
+
+function readEnv(name: string, fallback = ''): string {
   const value = process.env[name];
   return value === undefined || value === null ? fallback : String(value);
 }
 
-function parseCorsOrigins(value) {
+function parseCorsOrigins(value: string): string[] {
   if (!value) {
     return [];
   }
@@ -32,12 +43,12 @@ function parseCorsOrigins(value) {
     .filter(Boolean);
 }
 
-function normalizeStagePromptsPayload(stagePromptsCandidate) {
+function normalizeStagePromptsPayload(stagePromptsCandidate: unknown): JsonRecord | null {
   if (!stagePromptsCandidate || typeof stagePromptsCandidate !== 'object') {
     return null;
   }
 
-  const normalized = {};
+  const normalized: JsonRecord = {};
   for (const [key, value] of Object.entries(stagePromptsCandidate)) {
     if (typeof value === 'string' && value.trim()) {
       normalized[key] = value.trim();
@@ -46,7 +57,7 @@ function normalizeStagePromptsPayload(stagePromptsCandidate) {
   return Object.keys(normalized).length > 0 ? normalized : null;
 }
 
-function normalizeFactPackages(value) {
+function normalizeFactPackages(value: unknown): number {
   const numeric = Number(value);
   if (!Number.isFinite(numeric)) {
     return 0;
@@ -54,14 +65,14 @@ function normalizeFactPackages(value) {
   return Math.min(10, Math.max(0, Math.round(numeric)));
 }
 
-function buildDefaultProfileTemplate() {
+function buildDefaultProfileTemplate(): JsonRecord {
   return PERSONALITY_CRITERIA.reduce((acc, item) => {
     acc[item.key] = 5;
     return acc;
-  }, {});
+  }, {} as JsonRecord);
 }
 
-function safeString(value) {
+function safeString(value: unknown): string {
   if (value === undefined || value === null) {
     return '';
   }
@@ -292,7 +303,7 @@ app.use(
 
 app.use(express.json({ limit: '2mb' }));
 
-app.get('/api/health', (_req, res) => {
+app.get('/api/health', (_req: Request, res: Response) => {
   res.json({
     ok: true,
     service: 'legend-tu-staged-llm',
@@ -306,7 +317,7 @@ app.get('/api/health', (_req, res) => {
   });
 });
 
-app.get('/api/template', (_req, res) => {
+app.get('/api/template', (_req: Request, res: Response) => {
   res.json({
     ok: true,
     person_template: DEFAULT_PERSON_TEMPLATE,
@@ -317,7 +328,7 @@ app.get('/api/template', (_req, res) => {
   });
 });
 
-app.post('/api/check-canon-consistency', async (req, res) => {
+app.post('/api/check-canon-consistency', async (req: Request, res: Response) => {
   try {
     const requestId = randomUUID();
     const person = req.body?.person && typeof req.body.person === 'object' ? req.body.person : {};
@@ -376,7 +387,7 @@ app.post('/api/check-canon-consistency', async (req, res) => {
   }
 });
 
-app.post('/api/generate-profile', async (req, res) => {
+app.post('/api/generate-profile', async (req: Request, res: Response) => {
   try {
     const requestId = randomUUID();
 
@@ -461,7 +472,7 @@ app.post('/api/generate-profile', async (req, res) => {
   }
 });
 
-app.post('/api/translate-output', async (req, res) => {
+app.post('/api/translate-output', async (req: Request, res: Response) => {
   try {
     const requestId = randomUUID();
     const mode = normalizeTranslationMode(req.body?.mode);
@@ -658,3 +669,5 @@ app.post('/api/translate-output', async (req, res) => {
 app.listen(PORT, () => {
   console.log(`Backend listening on http://localhost:${PORT}`);
 });
+import type { Request, Response } from 'express';
+import type { JsonRecord } from './src/types';

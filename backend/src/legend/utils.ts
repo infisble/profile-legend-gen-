@@ -1,4 +1,4 @@
-﻿function clampInt(value, min, max) {
+function clampInt(value: unknown, min: number, max: number): number {
   const numeric = Number(value);
   if (!Number.isFinite(numeric)) {
     return min;
@@ -6,14 +6,14 @@
   return Math.min(max, Math.max(min, Math.round(numeric)));
 }
 
-function safeString(value) {
+function safeString(value: unknown): string {
   if (value === undefined || value === null) {
     return '';
   }
   return String(value);
 }
 
-function normalizeText(value) {
+function normalizeText(value: unknown): string {
   return safeString(value)
     .toLowerCase()
     .replace(/[^\p{L}\p{N}\s]/gu, ' ')
@@ -21,9 +21,9 @@ function normalizeText(value) {
     .trim();
 }
 
-function uniqueBy(items, selector) {
+function uniqueBy<T>(items: T[], selector: (item: T) => string): T[] {
   const seen = new Set();
-  const output = [];
+  const output: T[] = [];
 
   for (const item of items) {
     const key = selector(item);
@@ -37,7 +37,7 @@ function uniqueBy(items, selector) {
   return output;
 }
 
-function deepFreeze(value) {
+function deepFreeze<T>(value: T): T {
   if (!value || typeof value !== 'object') {
     return value;
   }
@@ -52,7 +52,7 @@ function deepFreeze(value) {
   return value;
 }
 
-function deepClone(value) {
+function deepClone<T>(value: T): T {
   if (value === undefined) {
     return undefined;
   }
@@ -60,7 +60,7 @@ function deepClone(value) {
   return JSON.parse(JSON.stringify(value));
 }
 
-function hashString(value) {
+function hashString(value: unknown): number {
   const text = safeString(value);
   let hash = 2166136261;
   for (let i = 0; i < text.length; i += 1) {
@@ -70,21 +70,21 @@ function hashString(value) {
   return Math.abs(hash >>> 0);
 }
 
-function cyclePick(items, index) {
+function cyclePick<T>(items: T[], index: number): T | null {
   if (!Array.isArray(items) || items.length === 0) {
     return null;
   }
   return items[index % items.length];
 }
 
-function splitSentences(text) {
+function splitSentences(text: unknown): string[] {
   return safeString(text)
     .split(/(?<=[.!?])\s+/)
     .map((item) => item.trim())
     .filter(Boolean);
 }
 
-function generateNgrams(text, n = 4) {
+function generateNgrams(text: unknown, n = 4): string[] {
   const tokens = normalizeText(text)
     .split(' ')
     .map((item) => item.trim())
@@ -94,7 +94,7 @@ function generateNgrams(text, n = 4) {
     return [];
   }
 
-  const ngrams = [];
+  const ngrams: string[] = [];
   for (let i = 0; i <= tokens.length - n; i += 1) {
     ngrams.push(tokens.slice(i, i + n).join(' '));
   }

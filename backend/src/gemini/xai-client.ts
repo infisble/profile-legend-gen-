@@ -1,3 +1,5 @@
+import type { ExtendedError } from '../types';
+
 const { safeString } = require('../legend/utils');
 
 const DEFAULT_XAI_BASE = 'https://api.x.ai/v1';
@@ -86,12 +88,12 @@ function extractFinishReason(payload) {
   return safeString(payload?.choices?.[0]?.finish_reason).trim();
 }
 
-function buildXaiEmptyContentError(raw, parsed) {
+function buildXaiEmptyContentError(raw, parsed): ExtendedError {
   const detail = safeString(raw).trim().slice(0, 1200);
   const finishReason = extractFinishReason(parsed);
   const error = new Error(
     finishReason ? `xAI returned empty content (${finishReason}). Raw: ${detail}` : `xAI returned empty content. Raw: ${detail}`
-  );
+  ) as ExtendedError;
   error.code = finishReason ? `XAI_EMPTY_${finishReason}` : 'XAI_EMPTY_CONTENT';
   error.finishReason = finishReason || null;
   error.rawPayload = parsed || null;
