@@ -1464,13 +1464,7 @@ export class ProfileLegendController {
       });
 
       const raw = await response.text();
-      const data = this.tryParseApiJson(raw);
-      if (!response.ok) {
-        throw new Error(this.extractBackendError(data, raw) || `Backend error (HTTP ${response.status}).`);
-      }
-      if (!data) {
-        throw new Error('Backend returned a non-JSON response.');
-      }
+      const data = this.unwrapApiResponse<ApiResponse>(raw, response.status, 'Backend error');
 
       this.consumeCanonConsistencyResponse(data);
     } catch (error) {
@@ -3078,13 +3072,7 @@ export class ProfileLegendController {
       });
 
       const raw = await response.text();
-      const data = this.tryParseApiJson(raw);
-      if (!response.ok) {
-        throw new Error(this.extractBackendError(data, raw) || `Backend error (HTTP ${response.status}).`);
-      }
-      if (!data) {
-        throw new Error('Backend returned a non-JSON response.');
-      }
+      const data = this.unwrapApiResponse<ApiResponse>(raw, response.status, 'Backend error');
 
       if (mutateState) {
         this.consumeBackendResponse(data);
@@ -3261,14 +3249,7 @@ export class ProfileLegendController {
       });
 
       const raw = await response.text();
-      const data = raw ? (JSON.parse(raw) as TranslateApiResponse) : null;
-      if (!response.ok) {
-        throw new Error(this.extractTranslationError(data, raw) || `Translation error (HTTP ${response.status}).`);
-      }
-
-      if (!data) {
-        throw new Error('Translator returned a non-JSON response.');
-      }
+      const data = this.unwrapApiResponse<TranslateApiResponse>(raw, response.status, 'Translation error');
 
       return data;
     } catch (error) {
@@ -3353,7 +3334,7 @@ export class ProfileLegendController {
 
   private resolveApiUrl(): string {
     if (typeof window === 'undefined' || !window.location) {
-      return 'http://localhost:3001/api/generate-profile';
+      return 'http://localhost:3001/ai/legend/generate-profile';
     }
 
     const { protocol, hostname, origin, port } = window.location;
@@ -3361,63 +3342,41 @@ export class ProfileLegendController {
     const isDevHost = isLocalHost && (port === '4200' || port === '5173');
 
     if (protocol === 'http:' && isDevHost) {
-      return 'http://localhost:3001/api/generate-profile';
+      return 'http://localhost:3001/ai/legend/generate-profile';
     }
 
-    return `${origin}/api/generate-profile`;
+    return `${origin}/ai/legend/generate-profile`;
   }
 
   private resolveCanonConsistencyApiUrl(): string {
-    return this.resolveApiUrl().replace('/api/generate-profile', '/api/check-canon-consistency');
+    return this.resolveApiUrl().replace('/ai/legend/generate-profile', '/ai/legend/check-canon-consistency');
   }
 
   private resolveTranslateOutputApiUrl(): string {
-    return this.resolveApiUrl().replace('/api/generate-profile', '/api/translate-output');
+    return this.resolveApiUrl().replace('/ai/legend/generate-profile', '/ai/legend/translate-output');
   }
 
-  private tryParseApiJson(raw: string): ApiResponse | null {
+  private tryParseRawJson(raw: string): unknown {
     try {
-      return raw ? (JSON.parse(raw) as ApiResponse) : null;
+      return raw ? JSON.parse(raw) : null;
     } catch {
       return null;
     }
   }
 
-  private extractBackendError(data: ApiResponse | null, raw: string): string {
-    const error = data?.error ? this.safeText(data.error) : '';
-    const details = Array.isArray(data?.details)
-      ? data.details.map((item) => this.safeText(item)).filter(Boolean).join(' | ')
-      : data?.details
-        ? this.safeText(data.details)
-        : '';
-
-    if (error && details) {
-      return `${error}: ${details}`;
+  private unwrapApiResponse<T>(raw: string, status: number, fallbackLabel: string): T {
+    const wrapper = this.tryParseRawJson(raw) as { success?: boolean; data?: unknown; message?: unknown } | null;
+    if (wrapper && wrapper.success === false) {
+      const message = this.safeText(wrapper.message).trim();
+      throw new Error(message || `${fallbackLabel} (HTTP ${status}).`);
     }
-    if (error) {
-      return error;
+    if (!wrapper) {
+      const fallback = this.safeText(raw).trim().slice(0, 600);
+      throw new Error(fallback || `${fallbackLabel} (HTTP ${status}).`);
     }
-    return this.safeText(raw).trim().slice(0, 600);
-  }
-
-  private extractTranslationError(data: TranslateApiResponse | null, raw: string): string {
-    const error = data?.error ? this.safeText(data.error) : '';
-    const details =
-      data?.details && typeof data.details === 'object'
-        ? JSON.stringify(data.details)
-        : data?.details
-          ? this.safeText(data.details)
-          : '';
-
-    if (error && details) {
-      return `${error}: ${details}`;
+    if (!wrapper.data || typeof wrapper.data !== 'object') {
+      throw new Error(`${fallbackLabel}: empty payload (HTTP ${status}).`);
     }
-    if (error) {
-      return error;
-    }
-    if (details) {
-      return details;
-    }
-    return this.safeText(raw).trim().slice(0, 600);
+    return wrapper.data as T;
   }
 }
