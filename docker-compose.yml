@@ -12,6 +12,19 @@ services:
       - "3001:3001"
     restart: unless-stopped
 
+  memory-service:
+    build:
+      context: ./memory-service
+      dockerfile: Dockerfile
+    container_name: profile-gen-memory-service
+    env_file:
+      - ./memory-service/.env
+    environment:
+      PORT: 3002
+    ports:
+      - "3002:3002"
+    restart: unless-stopped
+
   frontend:
     build:
       context: ./frontend

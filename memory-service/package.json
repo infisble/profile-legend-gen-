@@ -1,0 +1,26 @@
+{
+  "name": "memory-service",
+  "version": "0.1.0",
+  "private": true,
+  "scripts": {
+    "dev": "nest start --watch",
+    "build": "nest build",
+    "start": "node dist/main.js"
+  },
+  "dependencies": {
+    "@google/genai": "^1.0.0",
+    "@nestjs/common": "^11.1.9",
+    "@nestjs/core": "^11.1.9",
+    "@nestjs/platform-express": "^11.1.9",
+    "@supabase/supabase-js": "^2.105.1",
+    "dotenv": "^16.5.0",
+    "profile-gen": "file:..",
+    "reflect-metadata": "^0.2.2",
+    "rxjs": "^7.8.2"
+  },
+  "devDependencies": {
+    "@nestjs/cli": "^11.0.14",
+    "@types/node": "^24.6.0",
+    "typescript": "^5.9.3"
+  }
+}

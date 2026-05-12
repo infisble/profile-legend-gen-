@@ -1,135 +1,116 @@
-﻿# Profile Generator (Legend TU v2)
+﻿# Neutrons
 
-Монорепо с полным циклом генерации жизненной легенды персонажа по ТЗ:
+Neutrons - это веб-приложение для поэтапной генерации подробной биографической "легенды" персонажа. Пользователь вводит анкету, настраивает 16 личностных шкал, запускает этапы генерации и получает anchors, fact bank, готовые текстовые блоки, полный текст, тексты для dating profile и QC-отчёт.
 
-- `frontend/` — Angular UI: JSON-анкета, шкалы 1..10, stage prompts, регенерация этапов/блоков, QC-вывод.
-- `backend/` — Node.js/Express API с детерминированным pipeline и поэтапной регенерацией.
+Эта документация относится к ветке `update_front` / `origin/update_front`, не к `main`.
 
-## Pipeline
+## Что лежит в проекте
 
-1. `stage_0_canon`
-- нормализация входных данных (`person` + `personality_profile`)
-- фиксация canon
+- `frontend/` - React 18 + Vite интерфейс. Локально открывается на `http://localhost:4200`.
+- `backend/` - Node.js + Express + TypeScript API. Локально слушает `http://localhost:3001`.
+- `memory-service/` - отдельный NestJS сервис для Besocial dialog memory, Supabase pgvector и генерации replies/letters. В Docker слушает `http://localhost:3002`.
+- `docs/TRANSFER_GUIDE.md` - подробная инструкция по проекту, endpoints, pipeline, payloads, state и запуску.
+- `docs/MEMORY_SERVICE_WORKFLOW.md` - workflow memory-сервиса, endpoints, Supabase table/RPC и запуск.
+- `docker-compose.yml` - запуск frontend и backend в Docker.
 
-2. `stage_1_anchors`
-- генерация 8–12 якорей по сферам жизни
+## Как это работает простыми словами
 
-3. `stage_2_fact_bank`
-- генерация `150 + N*60` атомарных фактов
-- каждый факт = одно самостоятельное событие
-- источники: `anchors` + `canon` + `period_logic`
-- таймпривязка, сферы, hooks (15–30)
+Представьте конвейер из пяти станций. На первой станции система приводит анкету к понятному виду. На второй придумывает важные жизненные повороты. На третьей раскладывает жизнь на много маленьких фактов. На четвёртой собирает из фактов готовые тексты. На пятой проверяет, нет ли ошибок и противоречий.
 
-4. `stage_3_blocks`
-- сборка жизненных блоков, сплошного текста или обоих форматов строго из фактов
-- формат от первого лица
+Эти станции называются:
 
-5. `stage_4_qc`
-- 8 проверок качества: canon, timeline, непротиворечивость, проявление шкал, драмбаланс, hooks, шаблонность, стиль
+1. `stage_0_canon` - собрать базовую правду о персонаже.
+2. `stage_1_anchors` - создать 8-12 ключевых жизненных событий.
+3. `stage_2_fact_bank` - создать подробный банк фактов.
+4. `stage_3_blocks` - собрать тексты легенды.
+5. `stage_4_qc` - проверить качество.
 
-## Регенерация
+После каждого этапа backend возвращает `pipeline_state`. Его нужно отправлять в следующий этап. Без него система не знает, что уже было сгенерировано.
 
-- `regenerate_stage`:
-  - `stage_1_anchors`
-  - `stage_2_fact_bank`
-  - `stage_3_blocks`
-  - `stage_4_qc`
-- `regenerate_block`: перегенерация одного блока (`career_path`, `future_vector`, и т.д.)
-- Важно: каждая регенерация выполняется отдельным `POST /api/generate-profile` и требует `pipeline_state` из предыдущего ответа.
+## Важный нюанс ветки `update_front`
 
-## Quick start
+В этой ветке frontend ожидает внешний API в формате:
 
-1. Установить зависимости:
+- `POST /ai/legend/generate-profile`
+- `POST /ai/legend/check-canon-consistency`
+- `POST /ai/legend/translate-output`
+
+И ждёт ответ в оболочке:
+
+```json
+{
+  "success": true,
+  "data": {
+    "ok": true,
+    "result": {}
+  },
+  "message": ""
+}
+```
+
+Встроенный backend этого репозитория отдаёт прямые endpoints:
+
+- `GET /api/health`
+- `GET /api/template`
+- `POST /api/generate-profile`
+- `POST /api/check-canon-consistency`
+- `POST /api/translate-output`
+
+Если запускать frontend из этой ветки с bundled backend напрямую, нужен adapter/proxy между `/ai/legend/*` и `/api/*`.
+
+## Быстрый запуск
+
+Установить зависимости:
 
 ```bash
 npm install
 npm run install:all
+npm run install:memory
 ```
 
-2. Запустить frontend + backend:
+Запустить backend и frontend:
 
 ```bash
 npm run dev
 ```
 
-### Docker (локально и на сервере)
-
-1. Подготовить переменные backend:
+Запустить memory-service отдельно:
 
 ```bash
-cp backend/.env.example backend/.env
+npm run dev:memory
 ```
 
-2. Для прод-сервера укажите в `backend/.env`:
+Проверить backend:
 
-```env
-BESCO_CORS_ORIGINS=https://your-domain.com
+```bash
+curl http://localhost:3001/api/health
+curl http://localhost:3002/api/health
 ```
 
-Если `BESCO_CORS_ORIGINS` пустой, backend не будет ограничивать allowlist origin.
-
-Для длинных этапов (`stage_1_anchors`, `stage_2_fact_bank`) рекомендуемый таймаут:
-
-```env
-BESCO_REQUEST_TIMEOUT_SEC=420
-```
-
-3. Запуск:
+Docker:
 
 ```bash
 docker compose up -d --build
 ```
 
-4. API:
-- `GET /api/health`
-- `GET /api/template`
-- `POST /api/generate-profile`
+## Основные endpoints
 
-## Пример запроса
+Кратко:
 
-```json
-{
-  "person": {
-    "name": "Алина",
-    "birth_date": "1994-08-17",
-    "current_location": { "country": "Польша", "city": "Варшава", "since": "2022" },
-    "relationship_status": "не замужем, свободна, открыта к отношениям с мужчиной"
-  },
-  "personality_profile": {
-    "responsibility": 8,
-    "achievement_drive": 9,
-    "empathy": 6,
-    "discipline": 7,
-    "independence": 8,
-    "emotional_stability": 5,
-    "confidence": 7,
-    "openness_to_change": 9,
-    "creativity": 8,
-    "sexual_expressiveness": 6,
-    "dominance_level": 5,
-    "wealth": 6,
-    "health": 7,
-    "social_connection": 8,
-    "mission_level": 7,
-    "partner_seek_drive": 6
-  },
-  "stage_3_output_mode": "both",
-  "fact_extension_packages": 0,
-  "stage_prompts": {
-    "stage_1_anchors_prompt": "Сгенерируй якоря без противоречий canon"
-  }
-}
-```
+- `GET /api/health` - проверить, что backend жив.
+- `GET /api/template` - получить шаблоны анкеты, шкал, prompts и блоков.
+- `POST /api/generate-profile` - главный endpoint генерации по stages.
+- `POST /api/check-canon-consistency` - проверить, не спорит ли анкета со шкалами.
+- `POST /api/translate-output` - перевести готовые тексты, facts или anchors.
 
-## Ответ
+Подробные request/response примеры и порядок работы описаны в [docs/TRANSFER_GUIDE.md](docs/TRANSFER_GUIDE.md).
 
-`result.parsedJson` содержит:
+## Минимальный порядок работы с API
 
-- `short_summary`
-- `life_story`
-- `legend_full_text`
-- `legend_blocks` (+ `legend_v1_final_json` для совместимости)
-- `anchors`
-- `fact_bank_stats`
-- `qc_report`
-- `pipeline_state`
+1. Вызвать `POST /api/generate-profile` с `run_stage = "stage_0_canon"`.
+2. Взять `result.parsedJson.pipeline_state`.
+3. Передать этот `pipeline_state` в `stage_1_anchors`.
+4. Повторить то же для `stage_2_fact_bank`, `stage_3_blocks`, `stage_4_qc`.
+5. Если нужен перевод, вызвать `POST /api/translate-output`.
+
+Главное правило: каждый следующий stage должен получить актуальный `pipeline_state` из предыдущего stage.
