@@ -452,6 +452,34 @@
   padding-left: 18px;
 }
 
+.feedback-panel-actions,
+.qc-card-actions {
+  display: flex;
+  gap: 8px;
+  flex-wrap: wrap;
+  align-items: center;
+  margin-top: 12px;
+}
+
+.feedback-issue-list {
+  display: grid;
+  gap: 10px;
+  margin-top: 12px;
+}
+
+.feedback-issue-card {
+  padding: 12px;
+  border-radius: 8px;
+  border: 1px solid rgba(99, 37, 61, 0.24);
+  background: rgba(255, 255, 255, 0.22);
+}
+
+.issue-resolution-meta {
+  margin-top: 8px;
+  color: #4c2030;
+  font-size: 13px;
+}
+
 .qc-actions {
   display: flex;
   gap: 8px;
@@ -843,6 +871,10 @@
   padding-left: 18px;
 }
 
+.qc-card-actions {
+  margin-top: 14px;
+}
+
 .facts-grid {
   grid-template-columns: 0.75fr 1.25fr;
 }
@@ -918,6 +950,8 @@
   .panel-head-side,
   .anchors-toolbar,
   .screen-head-actions,
+  .feedback-panel-actions,
+  .qc-card-actions,
   .toolbar-button-grid,
   .card-actions-grid,
   .anchor-regenerate-actions {
@@ -927,6 +961,8 @@
   }
 
   .panel-head-side > button,
+  .feedback-panel-actions > button,
+  .qc-card-actions > button,
   .toolbar-button-grid > button,
   .card-actions-grid > button,
   .anchor-regenerate-actions > button,

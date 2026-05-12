@@ -1199,6 +1199,13 @@ function buildPendingQcReport(message = 'QC еще не выполнялся.') 
   };
 }
 
+function buildEmptyDatingSiteTexts() {
+  return {
+    profile_description: '',
+    looking_for_partner: ''
+  };
+}
+
 function buildPendingCanonConsistencyReport() {
   return {
     status: 'not_checked',
@@ -2104,6 +2111,7 @@ function buildInitialPipelineState({ canon, stagePrompts, factExtensionPackages,
     },
     legend_blocks: {},
     legend_full_text: '',
+    dating_site_texts: buildEmptyDatingSiteTexts(),
     legend_v1_final_json: {},
     blocks_report: {
       blocks_meta: {}
@@ -2141,6 +2149,7 @@ function ensurePipelineState(inputState) {
     state.legend_blocks = {};
   }
   state.legend_full_text = safeString(state.legend_full_text).trim();
+  state.dating_site_texts = normalizeDatingSiteTexts(state.dating_site_texts);
   if (!state.legend_v1_final_json || typeof state.legend_v1_final_json !== 'object' || Array.isArray(state.legend_v1_final_json)) {
     state.legend_v1_final_json = {};
   }
@@ -2889,6 +2898,255 @@ function normalizeBlocksMeta(rawMeta, facts) {
 
 function normalizeLegendFullText(raw) {
   return safeString(raw).trim();
+}
+
+function normalizeDatingSiteTextValue(raw) {
+  return safeString(raw).replace(/\s+/gu, ' ').trim();
+}
+
+function normalizeDatingSiteTexts(raw) {
+  const source = raw && typeof raw === 'object' && !Array.isArray(raw) ? raw : {};
+
+  return {
+    profile_description: normalizeDatingSiteTextValue(
+      source.profile_description || source.profileDescription || source.about_me || source.aboutMe
+    ),
+    looking_for_partner: normalizeDatingSiteTextValue(
+      source.looking_for_partner || source.lookingForPartner || source.partner_description || source.partnerDescription
+    )
+  };
+}
+
+function extractDatingSiteTexts(parsed) {
+  if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) {
+    return buildEmptyDatingSiteTexts();
+  }
+
+  const direct = normalizeDatingSiteTexts(parsed);
+  if (direct.profile_description || direct.looking_for_partner) {
+    return direct;
+  }
+
+  return normalizeDatingSiteTexts(parsed.dating_site_texts || parsed.datingSiteTexts || {});
+}
+
+function stripDatingSiteBlockedNames(value, canon) {
+  const blockedNames = [
+    canon?.name,
+    canon?.surname,
+    canon?.generalInfo?.name,
+    canon?.generalInfo?.surname,
+    canon?.person_raw?.name,
+    canon?.person_raw?.surname
+  ]
+    .map((item) => safeString(item).trim())
+    .filter((item) => item.length >= 2);
+
+  let next = normalizeDatingSiteTextValue(value);
+  for (const blockedName of blockedNames) {
+    const escaped = blockedName.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+    next = next.replace(new RegExp(`\\b${escaped}\\b`, 'giu'), '');
+  }
+
+  return normalizeDatingSiteTextValue(next.replace(/\s+([,.;!?])/gu, '$1'));
+}
+
+function stripDatingSiteDisallowedMarkers(value, canon) {
+  const withoutNames = stripDatingSiteBlockedNames(value, canon);
+  return normalizeDatingSiteTextValue(
+    withoutNames
+      .replace(/\b(?:19|20)\d{2}\b/gu, '')
+      .replace(/\b\d{1,2}[./-]\d{1,2}(?:[./-]\d{2,4})?\b/gu, '')
+      .replace(/\b\d{1,2}\s*(?:years?\s+old|yo|y\/o)\b/giu, '')
+      .replace(/\b(?:when i was|as a child|growing up|in childhood|at school|in school|at university|in college|years ago|my ex|former partner|used to)\b/giu, '')
+      .replace(/\s+([,.;!?])/gu, '$1')
+      .replace(/[ ,;:]+$/u, '')
+  );
+}
+
+function shortenDatingSiteText(value, maxLength) {
+  const normalized = normalizeDatingSiteTextValue(value);
+  if (!normalized || normalized.length <= maxLength) {
+    return normalized;
+  }
+
+  const sentences = normalized.match(/[^.!?]+[.!?]?/gu) || [normalized];
+  let assembled = '';
+  for (const rawSentence of sentences) {
+    const sentence = normalizeDatingSiteTextValue(rawSentence);
+    if (!sentence) {
+      continue;
+    }
+
+    const candidate = assembled ? `${assembled} ${sentence}` : sentence;
+    if (candidate.length > maxLength) {
+      break;
+    }
+    assembled = candidate;
+  }
+
+  if (assembled && assembled.length >= Math.min(maxLength - 30, Math.floor(maxLength * 0.65))) {
+    return assembled;
+  }
+
+  let truncated = normalized.slice(0, Math.max(1, maxLength - 1)).trim();
+  const lastSpace = truncated.lastIndexOf(' ');
+  if (lastSpace >= Math.floor(maxLength * 0.6)) {
+    truncated = truncated.slice(0, lastSpace).trim();
+  }
+  truncated = truncated.replace(/[,:;\-]+$/u, '').trim();
+  if (!/[.!?]$/u.test(truncated)) {
+    truncated = `${truncated}.`;
+  }
+  if (truncated.length > maxLength) {
+    truncated = truncated.slice(0, maxLength).replace(/[,:;\- ]+$/u, '').trim();
+    if (!/[.!?]$/u.test(truncated)) {
+      truncated = `${truncated.slice(0, Math.max(1, maxLength - 1)).trim()}.`;
+    }
+  }
+
+  return normalizeDatingSiteTextValue(truncated);
+}
+
+function buildDatingSiteFallbackProfileDescription(canon) {
+  const traitLabels = Array.isArray(canon?.top_traits)
+    ? canon.top_traits
+        .map((item) => safeString(item?.label).trim().toLowerCase())
+        .filter(Boolean)
+        .slice(0, 3)
+    : [];
+  const traitSummary = traitLabels.length > 0 ? traitLabels.join(', ') : 'warmth, depth, and intention';
+  const city = safeString(canon?.current_location?.city || canon?.birth_place).trim();
+  const locationSentence = city
+    ? ` I enjoy building a full life in ${city}, with space for meaningful work, beauty, movement, and real rest.`
+    : ' I enjoy a full life with space for meaningful work, beauty, movement, and real rest.';
+
+  return normalizeDatingSiteTextValue(
+    `I am building a life that feels grounded, emotionally honest, and genuinely alive, where ambition has room to coexist with warmth, playfulness, and deep connection.${locationSentence} My energy is shaped by ${traitSummary}, so I value real conversation, shared humor, tenderness, and the kind of trust that makes both people feel chosen. I care about a beautiful everyday rhythm, mutual respect, and a partnership where attraction, loyalty, and emotional maturity support a future we are both ready to build with intention.`
+  );
+}
+
+function buildDatingSiteFallbackPartnerDescription() {
+  return normalizeDatingSiteTextValue(
+    'I am looking for a man who is emotionally mature, kind, and consistent, someone who shows care through attention, honesty, initiative, and steady presence. I want a relationship that feels warm, playful, respectful, and secure, where attraction and tenderness live next to direct communication, loyalty, and real partnership. He knows how to choose each other every day and move toward a shared future with intention.'
+  );
+}
+
+function normalizeDatingSiteFieldWithFallback({ value, minLength, maxLength, fallbackText, canon }) {
+  let next = stripDatingSiteDisallowedMarkers(value, canon);
+  if (next.length > maxLength) {
+    next = shortenDatingSiteText(next, maxLength);
+  }
+  if (next.length < minLength) {
+    next = stripDatingSiteDisallowedMarkers(fallbackText, canon);
+  }
+  if (next.length > maxLength) {
+    next = shortenDatingSiteText(next, maxLength);
+  }
+  return normalizeDatingSiteTextValue(next);
+}
+
+function buildFallbackDatingSiteTexts(canon) {
+  return {
+    profile_description: normalizeDatingSiteFieldWithFallback({
+      value: '',
+      minLength: 500,
+      maxLength: 800,
+      fallbackText: buildDatingSiteFallbackProfileDescription(canon),
+      canon
+    }),
+    looking_for_partner: normalizeDatingSiteFieldWithFallback({
+      value: '',
+      minLength: 300,
+      maxLength: 500,
+      fallbackText: buildDatingSiteFallbackPartnerDescription(),
+      canon
+    })
+  };
+}
+
+function coerceDatingSiteTexts({ canon, texts }) {
+  const normalized = normalizeDatingSiteTexts(texts);
+  return {
+    profile_description: normalizeDatingSiteFieldWithFallback({
+      value: normalized.profile_description,
+      minLength: 500,
+      maxLength: 800,
+      fallbackText: buildDatingSiteFallbackProfileDescription(canon),
+      canon
+    }),
+    looking_for_partner: normalizeDatingSiteFieldWithFallback({
+      value: normalized.looking_for_partner,
+      minLength: 300,
+      maxLength: 500,
+      fallbackText: buildDatingSiteFallbackPartnerDescription(),
+      canon
+    })
+  };
+}
+
+function buildDatingSiteTextsAuditIssues({ canon, texts }) {
+  const normalized = normalizeDatingSiteTexts(texts);
+  const issues = [];
+
+  const profileLength = normalized.profile_description.length;
+  if (!normalized.profile_description) {
+    issues.push('profile_description is empty.');
+  } else if (profileLength < 500 || profileLength > 800) {
+    issues.push(`profile_description must be 500-800 characters including spaces; current length is ${profileLength}.`);
+  }
+
+  const partnerLength = normalized.looking_for_partner.length;
+  if (!normalized.looking_for_partner) {
+    issues.push('looking_for_partner is empty.');
+  } else if (partnerLength < 300 || partnerLength > 500) {
+    issues.push(`looking_for_partner must be 300-500 characters including spaces; current length is ${partnerLength}.`);
+  }
+
+  const valuesToCheck = [
+    ['profile_description', normalized.profile_description],
+    ['looking_for_partner', normalized.looking_for_partner]
+  ];
+  const blockedNames = [
+    canon?.name,
+    canon?.surname,
+    canon?.generalInfo?.name,
+    canon?.generalInfo?.surname,
+    canon?.person_raw?.name,
+    canon?.person_raw?.surname
+  ]
+    .map((item) => safeString(item).trim())
+    .filter((item) => item.length >= 2);
+
+  for (const [field, value] of valuesToCheck) {
+    if (!value) {
+      continue;
+    }
+
+    if (/\b(?:19|20)\d{2}\b/u.test(value) || /\b\d{1,2}[./-]\d{1,2}(?:[./-]\d{2,4})?\b/u.test(value)) {
+      issues.push(`${field} must not contain years or exact dates.`);
+    }
+    if (/\b\d{1,2}\s*(?:years?\s+old|yo|y\/o)\b/iu.test(value)) {
+      issues.push(`${field} must not contain age markers.`);
+    }
+    if (
+      /\b(?:when i was|as a child|growing up|in childhood|at school|in school|at university|in college|years ago|my ex|former partner|used to)\b/iu.test(
+        value
+      )
+    ) {
+      issues.push(`${field} must stay in the present and future, without past-life chronology.`);
+    }
+
+    for (const blockedName of blockedNames) {
+      const escaped = blockedName.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+      if (new RegExp(`\\b${escaped}\\b`, 'iu').test(value)) {
+        issues.push(`${field} must not contain personal names.`);
+        break;
+      }
+    }
+  }
+
+  return normalizeStringList(issues);
 }
 
 function normalizeFullTextAuditReport(raw) {
@@ -3824,6 +4082,175 @@ async function repairLegendBlocks({ canon, anchors, facts, currentBlocks, stageP
     legendBlocks: normalizeLegendBlocks(generated.parsed.legend || generated.parsed.legend_blocks || generated.parsed.legend_v1_final_json || {}),
     legendFullText: extractLegendFullText(generated.parsed),
     blocksMetaSource: generated.parsed.blocks_meta || generated.parsed?.blocks_report?.blocks_meta || {}
+  };
+}
+
+function buildDatingSiteTextsPrompt({ canon, legendBlocks, legendFullText }) {
+  const supportingLegend = {
+    lifestyle: safeString(legendBlocks?.lifestyle).trim(),
+    character: safeString(legendBlocks?.character).trim(),
+    hobby: safeString(legendBlocks?.hobby).trim(),
+    job: safeString(legendBlocks?.job).trim(),
+    lifePlans: safeString(legendBlocks?.lifePlans).trim(),
+    health: safeString(legendBlocks?.health).trim(),
+    preference: safeString(legendBlocks?.preference).trim(),
+    appearance: safeString(legendBlocks?.appearance).trim()
+  };
+
+  return `
+You are writing two short first-person texts for a dating site profile.
+${BASE_JSON_RULES_EN}
+
+Return JSON in this shape:
+{
+  "dating_site_texts": {
+    "profile_description": "one first-person paragraph, 500-800 characters",
+    "looking_for_partner": "one first-person paragraph, 300-500 characters"
+  }
+}
+
+Rules:
+- All generated text must be in English.
+- Both fields must be first person, warm, readable, and realistic.
+- profile_description = 500-800 characters including spaces. It must describe who I am now: my present lifestyle, energy, relationship style, values, and the future I want to build.
+- looking_for_partner = 300-500 characters including spaces. It must describe the partner and relationship dynamic I want now and in the future.
+- Do not use any names, surnames, nicknames, ages, years, exact dates, or timeline markers.
+- Do not mention childhood, school, university, ex-partners, or any past-life chronology. Stay in the present and future.
+- Do not write rigid filters about a man's age, height, body type, appearance, profession, income, or status.
+- In looking_for_partner, focus more on how the man makes me feel and how he shows up in a relationship: emotional safety, warmth, consistency, initiative, humor, tenderness, respect, depth, steadiness, shared direction.
+- No bullet lists, no headings, no emojis, no hashtags.
+- Avoid generic cliches and exaggerated luxury framing. Keep the tone personal, grounded, and attractive.
+- The two fields must fit the same woman and the same future-oriented relationship goal.
+
+Canon JSON:
+${JSON.stringify(buildCanonPromptData(canon), null, 2)}
+
+Supporting legend JSON:
+${JSON.stringify(supportingLegend, null, 2)}
+
+Supporting full text:
+${JSON.stringify(normalizeLegendFullText(legendFullText), null, 2)}
+`.trim();
+}
+
+function buildDatingSiteTextsRepairPrompt({ canon, legendBlocks, legendFullText, currentTexts, issues }) {
+  return `
+You are repairing two short dating-site texts so they match strict content rules.
+${BASE_JSON_RULES_EN}
+
+Return JSON in this shape:
+{
+  "dating_site_texts": {
+    "profile_description": "one first-person paragraph, 500-800 characters",
+    "looking_for_partner": "one first-person paragraph, 300-500 characters"
+  }
+}
+
+Problems to fix:
+${normalizeStringList(issues).map((item) => `- ${item}`).join('\n')}
+
+Critical rules:
+- All text must be in English and in first person.
+- profile_description must be 500-800 characters including spaces.
+- looking_for_partner must be 300-500 characters including spaces.
+- Remove any names, ages, years, exact dates, and past-life chronology.
+- Keep both texts focused on the present self and the desired future.
+- Do not describe rigid partner filters about age, appearance, profession, income, or status.
+- Keep looking_for_partner centered on relationship behavior, emotional quality, and the atmosphere I want with a man.
+- Keep the result grounded, concise, and natural. No headings or bullet lists.
+
+Current dating-site texts JSON:
+${JSON.stringify(normalizeDatingSiteTexts(currentTexts), null, 2)}
+
+Canon JSON:
+${JSON.stringify(buildCanonPromptData(canon), null, 2)}
+
+Supporting legend JSON:
+${JSON.stringify(legendBlocks || {}, null, 2)}
+
+Supporting full text:
+${JSON.stringify(normalizeLegendFullText(legendFullText), null, 2)}
+`.trim();
+}
+
+async function repairDatingSiteTexts({ canon, legendBlocks, legendFullText, currentTexts, issues, generationType, requestId }) {
+  const prompt = buildDatingSiteTextsRepairPrompt({
+    canon,
+    legendBlocks,
+    legendFullText,
+    currentTexts,
+    issues
+  });
+
+  const generated = await generateParsedGeminiObject({
+    prompt,
+    generationType,
+    requestId,
+    timeoutMs: resolveStageTimeoutMs('stage_3_blocks'),
+    stageKey: 'stage_3_dating_site_texts_repair'
+  });
+
+  return {
+    response: generated.response,
+    texts: extractDatingSiteTexts(generated.parsed)
+  };
+}
+
+async function generateDatingSiteTexts({ canon, legendBlocks, legendFullText, generationType, requestId }) {
+  const prompt = buildDatingSiteTextsPrompt({
+    canon,
+    legendBlocks,
+    legendFullText
+  });
+
+  const generated = await generateParsedGeminiObject({
+    prompt,
+    generationType,
+    requestId,
+    timeoutMs: resolveStageTimeoutMs('stage_3_blocks'),
+    stageKey: 'stage_3_dating_site_texts'
+  });
+
+  let response = generated.response;
+  let texts = extractDatingSiteTexts(generated.parsed);
+
+  for (let attempt = 0; attempt < 2; attempt += 1) {
+    const issues = buildDatingSiteTextsAuditIssues({
+      canon,
+      texts
+    });
+    if (issues.length === 0) {
+      break;
+    }
+
+    const repaired = await repairDatingSiteTexts({
+      canon,
+      legendBlocks,
+      legendFullText,
+      currentTexts: texts,
+      issues,
+      generationType,
+      requestId
+    });
+    response = repaired.response;
+    texts = repaired.texts;
+  }
+
+  const finalTexts = coerceDatingSiteTexts({
+    canon,
+    texts
+  });
+  const finalIssues = buildDatingSiteTextsAuditIssues({
+    canon,
+    texts: finalTexts
+  });
+  if (finalIssues.length > 0) {
+    throw new Error(`Dating-site texts failed validation: ${finalIssues.join(' ')}`);
+  }
+
+  return {
+    response,
+    texts: finalTexts
   };
 }
 
@@ -5359,6 +5786,7 @@ async function runStage1({ state, generationType, requestId }) {
   };
   state.legend_blocks = {};
   state.legend_full_text = '';
+  state.dating_site_texts = buildEmptyDatingSiteTexts();
   state.legend_v1_final_json = {};
   state.blocks_report = { blocks_meta: {} };
   state.qc_report = buildPendingQcReport('QC не запускался после обновления якорей.');
@@ -5432,6 +5860,7 @@ async function runStage2({ state, generationType, requestId }) {
   };
   state.legend_blocks = {};
   state.legend_full_text = '';
+  state.dating_site_texts = buildEmptyDatingSiteTexts();
   state.legend_v1_final_json = {};
   state.blocks_report = { blocks_meta: {} };
   state.qc_report = buildPendingQcReport('QC не запускался после обновления fact_bank.');
@@ -5457,6 +5886,7 @@ async function runStage3({ state, generationType, requestId, outputMode }) {
   let response = null;
   let legendBlocks = {};
   let legendFullText = '';
+  let datingSiteTexts = buildEmptyDatingSiteTexts();
   let hasBlocks = false;
   let blocksMetaSource = {};
   let sexualPreferencesOverrideResponse = null;
@@ -5621,6 +6051,20 @@ async function runStage3({ state, generationType, requestId, outputMode }) {
     }
   }
 
+  try {
+    const datingSiteResult = await generateDatingSiteTexts({
+      canon: state.canon,
+      legendBlocks,
+      legendFullText,
+      generationType,
+      requestId
+    });
+    response = datingSiteResult.response || response;
+    datingSiteTexts = datingSiteResult.texts;
+  } catch (_error) {
+    datingSiteTexts = buildFallbackDatingSiteTexts(state.canon);
+  }
+
   const normalizedBlocks = hasBlocks ? legendBlocks : {};
   const blocksMeta = hasBlocks ? normalizeBlocksMeta(blocksMetaSource, state.fact_bank) : {};
   if (hasBlocks && blocksMeta.sexualPreferences) {
@@ -5630,6 +6074,7 @@ async function runStage3({ state, generationType, requestId, outputMode }) {
 
   state.legend_blocks = normalizedBlocks;
   state.legend_full_text = legendFullText;
+  state.dating_site_texts = datingSiteTexts;
   state.legend_v1_final_json = deepClone(normalizedBlocks);
   state.blocks_report = {
     blocks_meta: blocksMeta

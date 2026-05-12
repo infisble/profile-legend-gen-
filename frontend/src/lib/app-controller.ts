@@ -317,6 +317,31 @@ const MIN_FACTS_REQUIRED = 150;
 const MAX_FACTS_ALLOWED = 220;
 const MIN_ANCHORS_REQUIRED = 8;
 const MAX_ANCHORS_ALLOWED = 12;
+const QC_AUTO_FIX_MAX_ATTEMPTS = 2;
+const QC_PROMPT_MAX_ISSUES_PER_CHECK = 4;
+const QC_PROMPT_MAX_RELATED_FACTS = 36;
+const QC_PROMPT_MAX_FACT_TEXT_LENGTH = 220;
+const QC_PROMPT_MAX_BLOCK_TEXT_LENGTH = 1800;
+const FACT_STAGE_QC_FIX_KEYS = new Set(['canon_consistency', 'timeline_consistency', 'trait_manifestation', 'drama_balance', 'hook_distribution']);
+const BLOCK_STAGE_QC_FIX_KEYS = new Set(['canon_consistency', 'cross_block_consistency', 'hook_distribution', 'anti_template', 'stylistic_rules']);
+const QC_FACT_SCOPE_BY_CHECK: Record<string, string[]> = {
+  canon_consistency: ['family', 'career', 'education', 'relationships', 'health', 'values', 'habits', 'future'],
+  timeline_consistency: [],
+  trait_manifestation: ['career', 'habits', 'social', 'values', 'relationships', 'crisis', 'mission'],
+  drama_balance: ['crisis', 'relationships', 'career', 'family', 'social', 'habits'],
+  hook_distribution: ['crisis', 'relationships', 'career', 'social', 'habits', 'future']
+};
+const QC_BLOCK_SCOPE_BY_CHECK: Record<string, string[]> = {
+  canon_consistency: [],
+  cross_block_consistency: [],
+  hook_distribution: ['character', 'exRelationships', 'job', 'friendsAndPets', 'lifestyle'],
+  anti_template: [],
+  stylistic_rules: []
+};
+const STAGE_3_BLOCKS_PROMPT_FALLBACK =
+  'Assemble the final text blocks into detailed, coherent, first-person legend blocks based on canon, anchors, and fact_bank.';
+const STAGE_3_FULL_TEXT_PROMPT_FALLBACK =
+  'Generate a detailed, coherent, first-person full legend text based on canon, anchors, and fact_bank.';
 const ANCHOR_STAGE_PROMPT_BASE = [
   'Generate 8-12 turning-point anchor events that did not merely affect the life of the person, but noticeably or completely changed the way that person saw the world: after them, the person began to perceive themselves, other people, intimacy, money, risk, responsibility, freedom, success, or safety differently and started making decisions differently.',
   'For each anchor, give maximum specificity in this format: when (month+year), where (city/country/context), what happened (one precise fact), how the worldview changed, result (a concrete outcome within a timeframe).',
@@ -545,6 +570,10 @@ export class ProfileLegendController {
 
   get canTranslateFacts(): boolean {
     return !this.isBusy && this.factBank.length > 0;
+  }
+
+  get failedQcChecks(): QcCheck[] {
+    return this.qcChecks.filter((check) => !check.passed);
   }
 
   get hasTranslatedFacts(): boolean {
@@ -1608,6 +1637,82 @@ export class ProfileLegendController {
     this.errorMessage = '';
   }
 
+  canResolveCanonIssue(issue: string): boolean {
+    if (this.isBusy) {
+      return false;
+    }
+
+    const resolution = this.getCanonIssueResolution(issue);
+    return Boolean(resolution) && !this.isConflictResolutionApplied(resolution as CanonConsistencyIssueResolution);
+  }
+
+  async resolveCanonIssue(issue: string): Promise<void> {
+    if (!this.canResolveCanonIssue(issue)) {
+      return;
+    }
+
+    const resolution = this.getCanonIssueResolution(issue);
+    if (!resolution) {
+      this.errorMessage = 'Could not determine how to fix this issue automatically.';
+      return;
+    }
+
+    this.applyCanonConflictResolution(resolution);
+    if (this.errorMessage) {
+      return;
+    }
+
+    await this.runCanon();
+    if (this.errorMessage) {
+      return;
+    }
+
+    await this.checkCanonConsistency();
+  }
+
+  async resolveAllCanonIssues(): Promise<void> {
+    if (this.isBusy || !this.canApplyAllCanonConflictResolutions()) {
+      return;
+    }
+
+    this.applyAllCanonConflictResolutions();
+    if (this.errorMessage) {
+      return;
+    }
+
+    await this.runCanon();
+    if (this.errorMessage) {
+      return;
+    }
+
+    await this.checkCanonConsistency();
+  }
+
+  canResolveQcCheck(check: QcCheck): boolean {
+    return !this.isBusy && Boolean(this.pipelineState) && !check.passed && check.issues.length > 0;
+  }
+
+  canResolveAllQcChecks(): boolean {
+    return this.failedQcChecks.some((check) => this.canResolveQcCheck(check));
+  }
+
+  async resolveQcCheck(check: QcCheck): Promise<void> {
+    if (!this.canResolveQcCheck(check)) {
+      return;
+    }
+
+    await this.resolveQcChecks([check]);
+  }
+
+  async resolveAllQcChecks(): Promise<void> {
+    const checks = this.failedQcChecks.filter((check) => this.canResolveQcCheck(check));
+    if (checks.length === 0) {
+      return;
+    }
+
+    await this.resolveQcChecks(checks);
+  }
+
   formatSignedDelta(value: number): string {
     const numeric = Number(value);
     if (!Number.isFinite(numeric) || numeric === 0) {
@@ -1963,6 +2068,196 @@ export class ProfileLegendController {
       'The new fact should fill a missing period, sphere, routine, or causal consequence, and it must not duplicate an existing fact.',
       `Current draft fact_bank JSON:\n${JSON.stringify(this.factBank, null, 2)}`,
       `Anchors timeline JSON:\n${JSON.stringify(this.anchors, null, 2)}`,
+      `Regeneration nonce: ${new Date().toISOString()}`
+    ].join('\n\n');
+  }
+
+  private async resolveQcChecks(checks: QcCheck[]): Promise<void> {
+    if (checks.length === 0) {
+      return;
+    }
+    if (!this.pipelineState) {
+      this.errorMessage = 'Run step 1 first to get pipeline_state.';
+      return;
+    }
+
+    let normalizedChecks = checks.filter((check) => !check.passed && check.issues.length > 0);
+    if (normalizedChecks.length === 0) {
+      this.noticeMessage = 'There are no failed QC checks to fix automatically.';
+      this.errorMessage = '';
+      return;
+    }
+
+    const initialCheckCount = normalizedChecks.length;
+    for (let attempt = 0; attempt < QC_AUTO_FIX_MAX_ATTEMPTS && normalizedChecks.length > 0; attempt += 1) {
+      const needsFactRegeneration = normalizedChecks.some((check) => FACT_STAGE_QC_FIX_KEYS.has(check.key));
+      const needsNarrativeRegeneration = needsFactRegeneration || normalizedChecks.some((check) => BLOCK_STAGE_QC_FIX_KEYS.has(check.key));
+
+      if (needsFactRegeneration) {
+        if (!this.assertStagePrerequisites('stage_2_fact_bank')) {
+          return;
+        }
+
+        await this.sendRequest({
+          ...this.buildBasePayload('blocks'),
+          run_stage: 'stage_2_fact_bank',
+          generation_type: 'type-flash',
+          pipeline_state: this.pipelineState,
+          stage_prompts: {
+            stage_2_fact_bank_prompt: this.buildQcFactFixPrompt(normalizedChecks, attempt)
+          }
+        });
+
+        if (this.errorMessage) {
+          return;
+        }
+      }
+
+      if (needsNarrativeRegeneration) {
+        if (!this.assertStagePrerequisites('stage_3_blocks')) {
+          return;
+        }
+
+        await this.sendRequest({
+          ...this.buildBasePayload('both'),
+          run_stage: 'stage_3_blocks',
+          generation_type: 'type-flash',
+          pipeline_state: this.pipelineState,
+          stage_prompts: {
+            stage_3_blocks_prompt: this.buildQcBlocksFixPrompt(normalizedChecks, attempt),
+            stage_3_full_text_prompt: this.buildQcFullTextFixPrompt(normalizedChecks, attempt)
+          }
+        });
+
+        if (this.errorMessage) {
+          return;
+        }
+      }
+
+      await this.runQc();
+      if (this.errorMessage) {
+        return;
+      }
+
+      normalizedChecks = this.failedQcChecks.filter((check) => check.issues.length > 0);
+    }
+
+    if (!this.errorMessage) {
+      if (normalizedChecks.length === 0) {
+        this.noticeMessage = `QC auto-fix finished. ${initialCheckCount} check${initialCheckCount === 1 ? '' : 's'} resolved.`;
+      } else {
+        this.noticeMessage = `QC auto-fix finished, but ${normalizedChecks.length} check${normalizedChecks.length === 1 ? '' : 's'} still need manual review.`;
+      }
+    }
+  }
+
+  private formatQcChecksForPrompt(checks: QcCheck[]): string {
+    return checks
+      .map((check) => {
+        const issueLines = check.issues
+          .slice(0, QC_PROMPT_MAX_ISSUES_PER_CHECK)
+          .map((issue) => `  - ${this.truncateForPrompt(issue, 320)}`)
+          .join('\n');
+        return `${check.title} (${check.key})\n${issueLines}`;
+      })
+      .join('\n\n');
+  }
+
+  private truncateForPrompt(value: unknown, maxLength: number): string {
+    const text = this.safeText(value).replace(/\s+/g, ' ').trim();
+    return text.length > maxLength ? `${text.slice(0, Math.max(0, maxLength - 1)).trim()}...` : text;
+  }
+
+  private getQcFactScope(checks: QcCheck[]): Set<string> {
+    const scope = new Set<string>();
+    checks.forEach((check) => {
+      (QC_FACT_SCOPE_BY_CHECK[check.key] || []).forEach((sphere) => scope.add(sphere));
+    });
+    return scope;
+  }
+
+  private getQcBlockScope(checks: QcCheck[]): Set<string> {
+    const explicitScope = new Set<string>();
+    checks.forEach((check) => {
+      (QC_BLOCK_SCOPE_BY_CHECK[check.key] || []).forEach((blockKey) => explicitScope.add(blockKey));
+    });
+    if (explicitScope.size === 0) {
+      this.legendBlocks.forEach((block) => explicitScope.add(block.key));
+    }
+    return explicitScope;
+  }
+
+  private getCompactQcFacts(checks: QcCheck[]): Array<Record<string, unknown>> {
+    const sphereScope = this.getQcFactScope(checks);
+    const facts = this.factBank.filter((fact) => {
+      const sphere = this.safeText(fact.sphere).trim();
+      return sphereScope.size === 0 || sphereScope.has(sphere) || Boolean(fact.hook);
+    });
+    return facts.slice(0, QC_PROMPT_MAX_RELATED_FACTS).map((fact, index) => ({
+      id: this.safeText(fact.id).trim() || `fact_${index + 1}`,
+      sphere: this.safeText(fact.sphere).trim(),
+      year: fact.year ?? null,
+      age: fact.age ?? null,
+      hook: Boolean(fact.hook),
+      text: this.truncateForPrompt(fact.text, QC_PROMPT_MAX_FACT_TEXT_LENGTH)
+    }));
+  }
+
+  private getCompactQcBlocks(checks: QcCheck[]): Record<string, string> {
+    const blockScope = this.getQcBlockScope(checks);
+    return this.legendBlocks.reduce<Record<string, string>>((acc, block) => {
+      if (blockScope.has(block.key)) {
+        acc[block.key] = this.truncateForPrompt(block.text, QC_PROMPT_MAX_BLOCK_TEXT_LENGTH);
+      }
+      return acc;
+    }, {});
+  }
+
+  private buildQcFixHeader(checks: QcCheck[], attempt: number): string {
+    return [
+      `QC auto-fix targeted pass ${attempt + 1}/${QC_AUTO_FIX_MAX_ATTEMPTS}.`,
+      'Fix only the failed QC checks listed below.',
+      'Do not rewrite unrelated material for style, taste, or variety.',
+      'If an unrelated item is already valid, preserve its meaning, ID, timing, sphere, hook flag, and factual content.',
+      `Failed QC checks and issues:\n${this.formatQcChecksForPrompt(checks)}`
+    ].join('\n');
+  }
+
+  private buildQcFactFixPrompt(checks: QcCheck[], attempt = 0): string {
+    const targetCount = this.buildFactCountTarget(this.factCount);
+    const relatedFacts = this.getCompactQcFacts(checks);
+    return [
+      FACT_STAGE_PROMPT_BASE,
+      this.buildQcFixHeader(checks, attempt),
+      `Return exactly ${targetCount} fact_bank items in total.`,
+      'Make the smallest fact-bank changes that can make the listed checks pass on the next QC run.',
+      'Prefer editing or replacing facts in the related scope; avoid changing unrelated spheres.',
+      'Do not create new contradictions with canon, anchors, or existing chronology.',
+      `Related current facts sample JSON:\n${JSON.stringify(relatedFacts, null, 2)}`,
+      `Regeneration nonce: ${new Date().toISOString()}`
+    ].join('\n\n');
+  }
+
+  private buildQcBlocksFixPrompt(checks: QcCheck[], attempt = 0): string {
+    const relatedBlocks = this.getCompactQcBlocks(checks);
+    return [
+      STAGE_3_BLOCKS_PROMPT_FALLBACK,
+      this.buildQcFixHeader(checks, attempt),
+      'Rewrite only the affected legend blocks and only the paragraphs needed to resolve the failed checks.',
+      'Keep block keys, canon facts, chronology, and unaffected passages stable.',
+      'Fix canon drift, cross-block contradictions, hook usage, anti-template problems, style-rule violations, and downstream consequences of fact-bank corrections only where they are present in the failed checks.',
+      `Affected/current block excerpts JSON:\n${JSON.stringify(relatedBlocks, null, 2)}`,
+      `Regeneration nonce: ${new Date().toISOString()}`
+    ].join('\n\n');
+  }
+
+  private buildQcFullTextFixPrompt(checks: QcCheck[], attempt = 0): string {
+    return [
+      STAGE_3_FULL_TEXT_PROMPT_FALLBACK,
+      this.buildQcFixHeader(checks, attempt),
+      'Regenerate the full legend text only as much as needed to reflect the targeted fact/block fixes.',
+      'Preserve the established biography, order, named details, and unaffected factual content.',
+      'Avoid broad restyling. Prefer local edits that make the next QC run pass.',
       `Regeneration nonce: ${new Date().toISOString()}`
     ].join('\n\n');
   }

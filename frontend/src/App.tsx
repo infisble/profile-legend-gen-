@@ -187,11 +187,54 @@ function CanonStage({ app, act, run }: StageProps) {
               {app.canonConsistencyReport.summary ? <p>{app.canonConsistencyReport.summary}</p> : null}
 
               {(app.canonConsistencyReport.issues || []).length > 0 ? (
-                <ul className="feedback-list">
-                  {(app.canonConsistencyReport.issues || []).map((issue) => (
-                    <li key={issue}>{issue}</li>
-                  ))}
-                </ul>
+                <>
+                  <div className="feedback-panel-actions">
+                    <button
+                      type="button"
+                      className="outline-button small"
+                      disabled={!app.canApplyAllCanonConflictResolutions()}
+                      onClick={() => {
+                        void run(() => app.resolveAllCanonIssues());
+                      }}
+                    >
+                      Resolve all
+                    </button>
+                  </div>
+
+                  <div className="feedback-issue-list">
+                    {(app.canonConsistencyReport.issues || []).map((issue) => {
+                      const resolution = app.getCanonIssueResolution(issue);
+                      const isApplied = resolution ? app.isConflictResolutionApplied(resolution) : false;
+
+                      return (
+                        <article key={issue} className="feedback-issue-card">
+                          <p>{issue}</p>
+
+                          {resolution ? (
+                            <p className="issue-resolution-meta">
+                              <strong>Suggested fix:</strong> {resolution.action_label}
+                            </p>
+                          ) : null}
+
+                          {resolution?.reason ? <p className="issue-resolution-meta">{resolution.reason}</p> : null}
+
+                          <div className="feedback-panel-actions">
+                            <button
+                              type="button"
+                              className="outline-button small"
+                              disabled={isApplied || !app.canResolveCanonIssue(issue)}
+                              onClick={() => {
+                                void run(() => app.resolveCanonIssue(issue));
+                              }}
+                            >
+                              {isApplied ? 'Applied' : 'Resolve this'}
+                            </button>
+                          </div>
+                        </article>
+                      );
+                    })}
+                  </div>
+                </>
               ) : (
                 <p>No contradictions found yet.</p>
               )}
@@ -699,6 +742,16 @@ function QcStage({ app, act, run }: StageProps) {
           </button>
           <button
             type="button"
+            className="outline-button"
+            disabled={!app.canResolveAllQcChecks()}
+            onClick={() => {
+              void run(() => app.resolveAllQcChecks());
+            }}
+          >
+            Resolve all
+          </button>
+          <button
+            type="button"
             className="panel-button"
             disabled={!app.canRunStage('stage_4_qc')}
             onClick={() => {
@@ -722,6 +775,20 @@ function QcStage({ app, act, run }: StageProps) {
                     <li key={issue}>{issue}</li>
                   ))}
                 </ul>
+              ) : null}
+              {!check.passed ? (
+                <div className="qc-card-actions">
+                  <button
+                    type="button"
+                    className="outline-button small"
+                    disabled={!app.canResolveQcCheck(check)}
+                    onClick={() => {
+                      void run(() => app.resolveQcCheck(check));
+                    }}
+                  >
+                    Resolve this
+                  </button>
+                </div>
               ) : null}
             </article>
           ))}

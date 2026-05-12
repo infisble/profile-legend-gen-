@@ -1671,6 +1671,10 @@ function buildLifeStory(legendBlocks) {
 function toLegendResponseJson(pipelineState) {
   const legendBlocks = deepClone(pipelineState.legend_blocks || pipelineState.legend_v1_final_json || {});
   const legendFullText = safeString(pipelineState.legend_full_text).trim();
+  const datingSiteTexts =
+    pipelineState.dating_site_texts && typeof pipelineState.dating_site_texts === 'object' && !Array.isArray(pipelineState.dating_site_texts)
+      ? deepClone(pipelineState.dating_site_texts)
+      : { profile_description: '', looking_for_partner: '' };
 
   return {
     short_summary: buildShortSummary(pipelineState),
@@ -1678,6 +1682,7 @@ function toLegendResponseJson(pipelineState) {
     legend: deepClone(legendBlocks),
     legend_blocks: legendBlocks,
     legend_full_text: legendFullText,
+    dating_site_texts: datingSiteTexts,
     legend_v1_final_json: deepClone(legendBlocks),
     anchors: deepClone(pipelineState.anchors_timeline || []),
     fact_bank_stats: deepClone(pipelineState.fact_bank_report || {}),
