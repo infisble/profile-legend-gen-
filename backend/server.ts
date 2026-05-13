@@ -465,7 +465,8 @@ app.post('/api/generate-profile', async (req: Request, res: Response) => {
     });
   } catch (error) {
     console.error('generate-profile error:', error);
-    res.status(500).json({
+    const statusCode = Number(error?.statusCode) || 500;
+    res.status(statusCode).json({
       error: 'Ошибка при генерации профиля',
       details: error.message || String(error)
     });

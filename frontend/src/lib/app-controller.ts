@@ -186,13 +186,6 @@ const STAGE_DEFINITIONS: StageDefinition[] = [
     title: 'Legend blocks',
     actionLabel: 'Regenerate legend',
     description: 'Assemble the full narrative, section blocks, and dating-site copy.'
-  },
-  {
-    key: 'stage_4_qc',
-    navLabel: '5th step: Quality control',
-    title: 'Quality control',
-    actionLabel: 'Run QC',
-    description: 'Validate consistency, trait manifestation, style, and readiness.'
   }
 ];
 
@@ -301,7 +294,7 @@ const LIFE_SPHERE_LABELS: Record<string, string> = {
   future: 'Future'
 };
 
-const STAGE_ORDER: StageKey[] = ['stage_0_canon', 'stage_1_anchors', 'stage_2_fact_bank', 'stage_3_blocks', 'stage_4_qc'];
+const STAGE_ORDER: StageKey[] = ['stage_0_canon', 'stage_1_anchors', 'stage_2_fact_bank', 'stage_3_blocks'];
 
 const DEFAULT_REQUEST_TIMEOUT_MS = 360000;
 const CANON_CONSISTENCY_REQUEST_TIMEOUT_MS = 240000;
@@ -876,6 +869,10 @@ export class ProfileLegendController {
       return false;
     }
 
+    if (this.hasBlockingStageChecks(stageKey)) {
+      return false;
+    }
+
     if (stageKey === 'stage_2_fact_bank') {
       const anchors = Array.isArray(this.pipelineState['anchors_timeline']) ? this.pipelineState['anchors_timeline'] : [];
       return this.isAnchorCountValid(anchors.length);
@@ -907,6 +904,10 @@ export class ProfileLegendController {
       return false;
     }
 
+    if (this.hasBlockingStageChecks(stageKey)) {
+      return false;
+    }
+
     const anchors = Array.isArray(this.pipelineState['anchors_timeline']) ? this.pipelineState['anchors_timeline'] : [];
     const facts = Array.isArray(this.pipelineState['fact_bank']) ? this.pipelineState['fact_bank'] : [];
     const blocks = this.pipelineState['legend_blocks'];
@@ -933,6 +934,56 @@ export class ProfileLegendController {
     }
 
     return false;
+  }
+
+  private hasBlockingStageChecks(stageKey: StageKey): boolean {
+    return false;
+    const failedKeys = new Set(this.qcChecks.filter((check) => !check.passed).map((check) => this.safeText(check.key).trim()));
+    if (failedKeys.size === 0) {
+      return false;
+    }
+
+    if (stageKey === 'stage_1_anchors') {
+      return failedKeys.has('stage_0_input_consistency');
+    }
+
+    if (stageKey === 'stage_2_fact_bank') {
+      return failedKeys.has('stage_0_input_consistency') || failedKeys.has('stage_1_anchor_alignment');
+    }
+
+    if (stageKey === 'stage_3_blocks') {
+      return failedKeys.has('stage_0_input_consistency') || failedKeys.has('stage_1_anchor_alignment') || failedKeys.has('stage_2_fact_alignment');
+    }
+
+    if (stageKey === 'stage_4_qc') {
+      return (
+        failedKeys.has('stage_0_input_consistency') ||
+        failedKeys.has('stage_1_anchor_alignment') ||
+        failedKeys.has('stage_2_fact_alignment') ||
+        failedKeys.has('stage_3_narrative_alignment')
+      );
+    }
+
+    return false;
+  }
+
+  private getBlockingStageCheckMessage(stageKey: StageKey): string {
+    const blockedCheck = this.qcChecks.find((check) => {
+      if (check.passed) {
+        return false;
+      }
+      const key = this.safeText(check.key).trim();
+      if (stageKey === 'stage_1_anchors') return key === 'stage_0_input_consistency';
+      if (stageKey === 'stage_2_fact_bank') return key === 'stage_0_input_consistency' || key === 'stage_1_anchor_alignment';
+      if (stageKey === 'stage_3_blocks') return key === 'stage_0_input_consistency' || key === 'stage_1_anchor_alignment' || key === 'stage_2_fact_alignment';
+      if (stageKey === 'stage_4_qc') return key.startsWith('stage_');
+      return false;
+    });
+
+    const title = this.safeText(blockedCheck?.title).trim();
+    return title
+      ? `Fix Stage checks before continuing: ${title}. Correct the listed issue and rerun that step.`
+      : 'Fix Stage checks before continuing. Correct the listed issue and rerun that step.';
   }
 
   getStageBadge(stageKey: StageKey): string {
@@ -2246,13 +2297,7 @@ export class ProfileLegendController {
       await this.runNarrative();
       return;
     }
-    if (!this.canRunStage('stage_4_qc') && !this.canRunStage('stage_3_blocks') && this.canRunStage('stage_2_fact_bank')) {
-      await this.runFacts();
-    }
-    if (!this.canRunStage('stage_4_qc') && this.canRunStage('stage_3_blocks')) {
-      await this.runNarrative();
-    }
-    await this.runQc();
+    await this.runNarrative();
   }
 
   private hasStageOutput(stageKey: StageKey): boolean {
@@ -2268,7 +2313,7 @@ export class ProfileLegendController {
     if (stageKey === 'stage_3_blocks') {
       return this.legendBlocks.length > 0 || Boolean(this.legendFullText.trim());
     }
-    return this.qcChecks.length > 0 || Boolean(this.qcSummary.trim());
+    return false;
   }
 
   private async runStage(stageKey: StageKey, options: { stage3OutputMode?: Stage3OutputMode } = {}): Promise<void> {
@@ -2323,6 +2368,11 @@ export class ProfileLegendController {
       return false;
     }
 
+    if (this.hasBlockingStageChecks(stageKey)) {
+      this.errorMessage = this.getBlockingStageCheckMessage(stageKey);
+      return false;
+    }
+
     if (stageKey === 'stage_2_fact_bank') {
       const anchors = Array.isArray(this.pipelineState['anchors_timeline']) ? this.pipelineState['anchors_timeline'] : [];
       if (!this.isAnchorCountValid(anchors.length)) {
@@ -2356,7 +2406,8 @@ export class ProfileLegendController {
       this.pipelineState?.['pipeline_meta'] && typeof this.pipelineState['pipeline_meta'] === 'object'
         ? (this.pipelineState['pipeline_meta'] as Record<string, unknown>)
         : null;
-    const lastCompletedStage = this.safeText(pipelineMeta?.['last_completed_stage']).trim() as StageKey;
+    const rawLastCompletedStage = this.safeText(pipelineMeta?.['last_completed_stage']).trim() as StageKey;
+    const lastCompletedStage = rawLastCompletedStage === 'stage_4_qc' ? 'stage_3_blocks' : rawLastCompletedStage;
     const currentIndex = STAGE_ORDER.indexOf(stageKey);
     const lastIndex = STAGE_ORDER.indexOf(lastCompletedStage);
     return currentIndex !== -1 && lastIndex !== -1 && lastIndex >= currentIndex;
@@ -2376,8 +2427,8 @@ export class ProfileLegendController {
     if (lastCompletedStage === 'stage_0_canon') return 'stage_1_anchors';
     if (lastCompletedStage === 'stage_1_anchors') return 'stage_2_fact_bank';
     if (lastCompletedStage === 'stage_2_fact_bank') return 'stage_3_blocks';
-    if (lastCompletedStage === 'stage_3_blocks') return 'stage_4_qc';
-    if (lastCompletedStage === 'stage_4_qc') return 'stage_4_qc';
+    if (lastCompletedStage === 'stage_3_blocks') return 'stage_3_blocks';
+    if (lastCompletedStage === 'stage_4_qc') return 'stage_3_blocks';
     return 'stage_0_canon';
   }
 
@@ -3334,7 +3385,7 @@ export class ProfileLegendController {
 
   private resolveApiUrl(): string {
     if (typeof window === 'undefined' || !window.location) {
-      return 'http://localhost:3001/ai/legend/generate-profile';
+      return 'http://localhost:3001/api/generate-profile';
     }
 
     const { protocol, hostname, origin, port } = window.location;
@@ -3342,18 +3393,18 @@ export class ProfileLegendController {
     const isDevHost = isLocalHost && (port === '4200' || port === '5173');
 
     if (protocol === 'http:' && isDevHost) {
-      return 'http://localhost:3001/ai/legend/generate-profile';
+      return 'http://localhost:3001/api/generate-profile';
     }
 
-    return `${origin}/ai/legend/generate-profile`;
+    return `${origin}/api/generate-profile`;
   }
 
   private resolveCanonConsistencyApiUrl(): string {
-    return this.resolveApiUrl().replace('/ai/legend/generate-profile', '/ai/legend/check-canon-consistency');
+    return this.resolveApiUrl().replace('/api/generate-profile', '/api/check-canon-consistency');
   }
 
   private resolveTranslateOutputApiUrl(): string {
-    return this.resolveApiUrl().replace('/ai/legend/generate-profile', '/ai/legend/translate-output');
+    return this.resolveApiUrl().replace('/api/generate-profile', '/api/translate-output');
   }
 
   private tryParseRawJson(raw: string): unknown {
@@ -3373,6 +3424,9 @@ export class ProfileLegendController {
     if (!wrapper) {
       const fallback = this.safeText(raw).trim().slice(0, 600);
       throw new Error(fallback || `${fallbackLabel} (HTTP ${status}).`);
+    }
+    if ('ok' in wrapper || 'result' in wrapper) {
+      return wrapper as T;
     }
     if (!wrapper.data || typeof wrapper.data !== 'object') {
       throw new Error(`${fallbackLabel}: empty payload (HTTP ${status}).`);

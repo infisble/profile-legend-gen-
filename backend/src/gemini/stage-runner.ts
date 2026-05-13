@@ -1,7 +1,7 @@
 // @ts-nocheck
 const { PERSONALITY_CRITERIA, STAGE_PROMPT_DEFAULTS, LEGEND_BLOCKS, LIFE_SPHERES, QC_CHECKS } = require('../legend/constants');
 const { clampInt, safeString, deepClone, normalizeText } = require('../legend/utils');
-const { validateCanonProfileConsistency } = require('../legend/pipeline');
+const { validateCanonProfileConsistency, regenerateLegendStage } = require('../legend/pipeline');
 const { generateGeminiJson } = require('./client');
 const { generateXaiJson, hasXaiCredentials, isXaiSexualRoutingEnabled } = require('./xai-client');
 
@@ -1212,6 +1212,253 @@ function buildPendingCanonConsistencyReport() {
     model: null,
     endpoint_mode: null,
     warning: null
+  };
+}
+
+function buildStageQcCheck(key, title, issues = []) {
+  const normalizedIssues = normalizeStringList(issues);
+  return {
+    key,
+    title,
+    passed: normalizedIssues.length === 0,
+    issues: normalizedIssues
+  };
+}
+
+function pushStageIssue(issues, message) {
+  const text = safeString(message).trim();
+  if (text) {
+    issues.push(text);
+  }
+}
+
+function buildAutomatedQcReport(state, completedStageKey) {
+  const canon = state?.canon || {};
+  const birthYear = parseYear(canon.birth_year || canon.birth_date);
+  const canonAge = resolveAge(canon);
+  const checks = [];
+
+  const inputCheck = validateCanonProfileConsistency(canon, canon.personality_profile || {});
+  checks.push(
+    buildStageQcCheck(
+      'stage_0_input_consistency',
+      'Step 1: General info, Additional info, and scales',
+      (inputCheck.issues || []).map((issue) => `${issue} Fix: correct General info, Additional info, or the related scale, then rerun step 1.`)
+    )
+  );
+
+  if (['stage_1_anchors', 'stage_2_fact_bank', 'stage_3_blocks', 'stage_4_qc'].includes(completedStageKey)) {
+    const anchorIssues = [];
+    const anchors = Array.isArray(state.anchors_timeline) ? state.anchors_timeline : [];
+    if (anchors.length < 8 || anchors.length > 12) {
+      pushStageIssue(anchorIssues, `Anchors count is ${anchors.length}, expected 8-12. Fix: regenerate step 2.`);
+    }
+    anchors.forEach((anchor, index) => {
+      const label = safeString(anchor.id).trim() || `anchor ${index + 1}`;
+      const age = Number(anchor.age);
+      const year = Number(anchor.year);
+      if (!safeString(anchor.event || anchor.worldview_shift || anchor.outcome).trim()) {
+        pushStageIssue(anchorIssues, `${label} has no meaningful event/outcome text. Fix: regenerate or edit step 2.`);
+      }
+      if (Number.isFinite(age) && Number.isFinite(canonAge) && age > canonAge + 2) {
+        pushStageIssue(anchorIssues, `${label} age ${Math.round(age)} is after the current canon age ${canonAge}. Fix: regenerate or edit step 2.`);
+      }
+      if (Number.isFinite(age) && age < 0) {
+        pushStageIssue(anchorIssues, `${label} has negative age ${Math.round(age)}. Fix: regenerate or edit step 2.`);
+      }
+      if (Number.isFinite(age) && Number.isFinite(year) && Number.isFinite(birthYear)) {
+        const expectedAge = Math.round(year) - birthYear;
+        if (Math.abs(expectedAge - Math.round(age)) > 1) {
+          pushStageIssue(
+            anchorIssues,
+            `${label} has year ${Math.round(year)} and age ${Math.round(age)}, but canon birth year ${birthYear} gives age ${expectedAge}. Fix: edit the anchor year/age or rerun step 2.`
+          );
+        }
+      }
+    });
+    checks.push(buildStageQcCheck('stage_1_anchor_alignment', 'Step 1 ↔ Step 2: Canon and anchors', anchorIssues));
+  }
+
+  if (['stage_2_fact_bank', 'stage_3_blocks', 'stage_4_qc'].includes(completedStageKey)) {
+    const factIssues = [];
+    const facts = Array.isArray(state.fact_bank) ? state.fact_bank : [];
+    const anchors = Array.isArray(state.anchors_timeline) ? state.anchors_timeline : [];
+    const anchorIds = new Set(anchors.map((anchor) => safeString(anchor.id).trim()).filter(Boolean));
+    const targetFacts = FACTS_BASE_LIMIT + normalizeFactPackages(state.fact_extension_packages) * FACTS_EXTENSION_STEP;
+    if (facts.length < Math.min(targetFacts, FACTS_BASE_LIMIT)) {
+      pushStageIssue(factIssues, `Fact bank has ${facts.length} facts, expected at least ${Math.min(targetFacts, FACTS_BASE_LIMIT)}. Fix: rerun step 3.`);
+    }
+    facts.forEach((fact, index) => {
+      const label = safeString(fact.id).trim() || `fact ${index + 1}`;
+      const text = safeString(fact.text || fact.action).trim();
+      const age = Number(fact.age);
+      const year = Number(fact.year);
+      const sourceAnchorId = safeString(fact.source_anchor_id || fact.sourceAnchorId).trim();
+      if (!text) {
+        pushStageIssue(factIssues, `${label} has empty text. Fix: regenerate or edit step 3.`);
+      }
+      if (sourceAnchorId && anchorIds.size > 0 && !anchorIds.has(sourceAnchorId)) {
+        pushStageIssue(factIssues, `${label} points to missing anchor ${sourceAnchorId}. Fix: rerun step 3 from the current anchors.`);
+      }
+      if (Number.isFinite(year) && Number.isFinite(birthYear) && year < birthYear) {
+        pushStageIssue(factIssues, `${label} year ${Math.round(year)} is before canon birth year ${birthYear}. Fix: edit the fact or rerun step 3.`);
+      }
+      if (Number.isFinite(age) && Number.isFinite(canonAge) && age > canonAge + 2) {
+        pushStageIssue(factIssues, `${label} age ${Math.round(age)} is after the current canon age ${canonAge}. Fix: edit the fact or rerun step 3.`);
+      }
+      if (Number.isFinite(age) && Number.isFinite(year) && Number.isFinite(birthYear)) {
+        const expectedAge = Math.round(year) - birthYear;
+        if (Math.abs(expectedAge - Math.round(age)) > 1) {
+          pushStageIssue(
+            factIssues,
+            `${label} has year ${Math.round(year)} and age ${Math.round(age)}, but canon birth year ${birthYear} gives age ${expectedAge}. Fix: edit the fact year/age or rerun step 3.`
+          );
+        }
+      }
+    });
+    checks.push(buildStageQcCheck('stage_2_fact_alignment', 'Steps 1-2 ↔ Step 3: Canon, anchors, and facts', factIssues));
+  }
+
+  if (['stage_3_blocks', 'stage_4_qc'].includes(completedStageKey)) {
+    const narrativeIssues = [];
+    const blocks = state.legend_blocks && typeof state.legend_blocks === 'object' ? state.legend_blocks : {};
+    const blockTexts = Object.values(blocks).map((value) => safeString(value).trim()).filter(Boolean);
+    const mergedText = `${safeString(state.legend_full_text)}\n${blockTexts.join('\n')}`.trim();
+    if (blockTexts.length === 0 && !safeString(state.legend_full_text).trim()) {
+      pushStageIssue(narrativeIssues, 'Legend output is empty. Fix: rerun step 4.');
+    }
+    const meta = state.blocks_report?.blocks_meta && typeof state.blocks_report.blocks_meta === 'object' ? state.blocks_report.blocks_meta : {};
+    const factsUsed = Object.values(meta).reduce((sum, item) => sum + Number(item?.facts_used || item?.factsUsed || 0), 0);
+    if (Array.isArray(state.fact_bank) && state.fact_bank.length > 0 && blockTexts.length > 0 && factsUsed === 0) {
+      pushStageIssue(narrativeIssues, 'Legend blocks do not report any used facts from the fact bank. Fix: rerun step 4 from the current fact bank.');
+    }
+    const canonName = safeString(canon.name).trim();
+    if (canonName && mergedText && !normalizeText(mergedText).includes(normalizeText(canonName))) {
+      pushStageIssue(narrativeIssues, `Legend text does not mention canon name "${canonName}". Fix: rerun or edit step 4.`);
+    }
+    checks.push(buildStageQcCheck('stage_3_narrative_alignment', 'Steps 1-3 ↔ Step 4: Final narrative alignment', narrativeIssues));
+  }
+
+  const passedChecks = checks.filter((check) => check.passed).length;
+  return {
+    checks,
+    summary: {
+      passed_checks: passedChecks,
+      total_checks: checks.length,
+      ready: passedChecks === checks.length
+    },
+    status: passedChecks === checks.length ? 'passed' : 'failed',
+    message:
+      passedChecks === checks.length
+        ? 'Automated cross-stage checks passed.'
+        : 'Automated cross-stage checks found issues. Fix the listed stage and rerun from that point.'
+  };
+}
+
+function getBlockingQcCheckKeysForStage(stageKey) {
+  if (stageKey === 'stage_1_anchors') {
+    return ['stage_0_input_consistency'];
+  }
+  if (stageKey === 'stage_2_fact_bank') {
+    return ['stage_0_input_consistency', 'stage_1_anchor_alignment'];
+  }
+  if (stageKey === 'stage_3_blocks') {
+    return ['stage_0_input_consistency', 'stage_1_anchor_alignment', 'stage_2_fact_alignment'];
+  }
+  if (stageKey === 'stage_4_qc') {
+    return ['stage_0_input_consistency', 'stage_1_anchor_alignment', 'stage_2_fact_alignment', 'stage_3_narrative_alignment'];
+  }
+  return [];
+}
+
+function findBlockingQcChecks(state, stageKey) {
+  const blockingKeys = new Set(getBlockingQcCheckKeysForStage(stageKey));
+  const checks = Array.isArray(state?.qc_report?.checks) ? state.qc_report.checks : [];
+  return checks.filter((check) => blockingKeys.has(safeString(check?.key).trim()) && check?.passed === false);
+}
+
+function assertNoBlockingQcChecks(state, stageKey) {
+  return;
+  const blockingChecks = findBlockingQcChecks(state, stageKey);
+  if (blockingChecks.length === 0) {
+    return;
+  }
+
+  const titles = blockingChecks.map((check) => safeString(check.title || check.key).trim()).filter(Boolean);
+  const error = new Error(
+    `Stage checks are not passed. Fix these checks before continuing: ${titles.join('; ') || 'previous stage checks'}.`
+  );
+  error.statusCode = 400;
+  error.details = blockingChecks.map((check) => ({
+    key: check.key,
+    title: check.title,
+    issues: Array.isArray(check.issues) ? check.issues : []
+  }));
+  throw error;
+}
+
+function applyMockStageFallback({
+  state,
+  stageKey,
+  normalizedStagePrompts,
+  normalizedStage3OutputMode,
+  normalizedFactPackages,
+  normalizedGenerationType,
+  error
+}) {
+  const rebuilt = regenerateLegendStage({
+    pipelineState: state,
+    stageKey,
+    options: {
+      stage_prompts: normalizedStagePrompts,
+      stage_3_output_mode: normalizedStage3OutputMode,
+      fact_extension_packages: normalizedFactPackages,
+      generation_type: normalizedGenerationType
+    }
+  });
+
+  if (stageKey === 'stage_1_anchors') {
+    state.anchors_timeline = deepClone(rebuilt.anchors_timeline || []);
+    state.anchors_report = deepClone(rebuilt.anchors_report || {});
+    state.fact_bank = [];
+    state.fact_bank_report = {
+      target_total_facts: FACTS_BASE_LIMIT + normalizeFactPackages(state.fact_extension_packages) * FACTS_EXTENSION_STEP,
+      coverage_by_sphere: {},
+      weak_spheres: LIFE_SPHERES.map((item) => item.key),
+      extension_packages: normalizeFactPackages(state.fact_extension_packages)
+    };
+    state.legend_blocks = {};
+    state.legend_full_text = '';
+    state.legend_v1_final_json = {};
+    state.blocks_report = { blocks_meta: {} };
+  } else if (stageKey === 'stage_2_fact_bank') {
+    state.fact_bank = deepClone(rebuilt.fact_bank || []);
+    state.fact_bank_report = deepClone(rebuilt.fact_bank_report || {});
+    state.legend_blocks = {};
+    state.legend_full_text = '';
+    state.legend_v1_final_json = {};
+    state.blocks_report = { blocks_meta: {} };
+  } else if (stageKey === 'stage_3_blocks') {
+    state.legend_blocks = deepClone(rebuilt.legend_blocks || {});
+    state.legend_full_text = safeString(rebuilt.legend_full_text).trim();
+    state.legend_v1_final_json = deepClone(rebuilt.legend_v1_final_json || rebuilt.legend_blocks || {});
+    state.blocks_report = deepClone(rebuilt.blocks_report || { blocks_meta: {} });
+  }
+
+  state.qc_report = buildAutomatedQcReport(state, stageKey);
+  updatePipelineMeta(state, {
+    last_completed_stage: stageKey,
+    provider: 'mock',
+    model_name: 'local_mock',
+    endpoint_mode: 'local_mock',
+    stage_3_output_mode: normalizedStage3OutputMode,
+    mock_fallback_reason: safeString(error?.message || error).trim().slice(0, 1000)
+  });
+
+  return {
+    model: 'local_mock',
+    provider: 'mock',
+    endpointMode: 'local_mock'
   };
 }
 
@@ -3130,6 +3377,9 @@ async function runCanonProfileConsistencyCheck({
   const normalizedPerson = normalizeIncomingPerson(person);
   const normalizedProfile = normalizeProfile(personalityProfile || {});
   const heuristic = validateCanonProfileConsistency(normalizedPerson, normalizedProfile);
+  const hasInputConsistencyConflict = (heuristic.issues || []).some((issue) =>
+    safeString(issue).startsWith('General Info vs Additional Info conflict:')
+  );
   const prompt = buildCanonConsistencyPrompt({
     person: normalizedPerson,
     personalityProfile: normalizedProfile,
@@ -3141,46 +3391,53 @@ async function runCanonProfileConsistencyCheck({
   let geminiReport = null;
 
   try {
-    const generated = await generateParsedGeminiObject({
-      prompt,
-      generationType,
-      requestId,
-      timeoutMs: resolveStageTimeoutMs('canon_profile_consistency'),
-      stageKey: 'canon_profile_consistency'
-    });
-    response = generated.response;
-    const parsed = generated.parsed;
-    geminiReport = normalizeCanonConsistencyReport(parsed, {
-      source: 'gemini',
-      model: response.model,
-      endpoint_mode: response.endpointMode
-    });
+    if (!hasInputConsistencyConflict) {
+      const generated = await generateParsedGeminiObject({
+        prompt,
+        generationType,
+        requestId,
+        timeoutMs: resolveStageTimeoutMs('canon_profile_consistency'),
+        stageKey: 'canon_profile_consistency'
+      });
+      response = generated.response;
+      const parsed = generated.parsed;
+      geminiReport = normalizeCanonConsistencyReport(parsed, {
+        source: 'gemini',
+        model: response.model,
+        endpoint_mode: response.endpointMode
+      });
+    }
   } catch (error) {
     warning = error instanceof Error ? error.message : String(error);
   }
 
-  const mergedIssues = normalizeStringList([...(geminiReport?.issues || []), ...heuristic.issues]);
+  const mergedIssues = hasInputConsistencyConflict
+    ? normalizeStringList(heuristic.issues)
+    : normalizeStringList([...(geminiReport?.issues || []), ...heuristic.issues]);
   const passed = Boolean(geminiReport ? geminiReport.passed && heuristic.passed : heuristic.passed);
+  const source = hasInputConsistencyConflict ? 'input_consistency_heuristic' : geminiReport ? 'gemini+heuristic' : 'heuristic_fallback';
   const report = normalizeCanonConsistencyReport(
     {
       ...geminiReport,
       passed,
       issues: mergedIssues,
       heuristic_issues: heuristic.issues,
-      issue_resolutions: [...(geminiReport?.issue_resolutions || []), ...(heuristic.issue_resolutions || [])],
-      source: geminiReport ? 'gemini+heuristic' : 'heuristic_fallback',
+      issue_resolutions: hasInputConsistencyConflict ? [] : [...(geminiReport?.issue_resolutions || []), ...(heuristic.issue_resolutions || [])],
+      source,
       model: geminiReport?.model || response?.model || null,
       endpoint_mode: geminiReport?.endpoint_mode || response?.endpointMode || null,
-      warning,
-      summary: geminiReport?.summary || (passed ? 'Проверка не нашла явных конфликтов между Canon JSON и шкалами.' : 'Проверка нашла явные конфликты между Canon JSON и шкалами.')
+      warning: hasInputConsistencyConflict ? null : warning,
+      summary: hasInputConsistencyConflict
+        ? 'Found explicit contradictions between General Info and Additional Info.'
+        : geminiReport?.summary || (passed ? 'Проверка не нашла явных конфликтов между Canon JSON и шкалами.' : 'Проверка нашла явные конфликты между Canon JSON и шкалами.')
     },
     {
       passed,
       issues: mergedIssues,
       heuristic_issues: heuristic.issues,
-      issue_resolutions: heuristic.issue_resolutions || [],
-      source: geminiReport ? 'gemini+heuristic' : 'heuristic_fallback',
-      warning
+      issue_resolutions: hasInputConsistencyConflict ? [] : heuristic.issue_resolutions || [],
+      source,
+      warning: hasInputConsistencyConflict ? null : warning
     }
   );
 
@@ -5361,7 +5618,7 @@ async function runStage1({ state, generationType, requestId }) {
   state.legend_full_text = '';
   state.legend_v1_final_json = {};
   state.blocks_report = { blocks_meta: {} };
-  state.qc_report = buildPendingQcReport('QC не запускался после обновления якорей.');
+  state.qc_report = buildAutomatedQcReport(state, 'stage_1_anchors');
 
   updatePipelineMeta(state, {
     ...buildStageProviderMetaPatch(state, response, 'stage_1_anchors')
@@ -5434,7 +5691,7 @@ async function runStage2({ state, generationType, requestId }) {
   state.legend_full_text = '';
   state.legend_v1_final_json = {};
   state.blocks_report = { blocks_meta: {} };
-  state.qc_report = buildPendingQcReport('QC не запускался после обновления fact_bank.');
+  state.qc_report = buildAutomatedQcReport(state, 'stage_2_fact_bank');
 
   updatePipelineMeta(state, {
     ...buildStageProviderMetaPatch(state, response, 'stage_2_fact_bank')
@@ -5634,7 +5891,7 @@ async function runStage3({ state, generationType, requestId, outputMode }) {
   state.blocks_report = {
     blocks_meta: blocksMeta
   };
-  state.qc_report = buildPendingQcReport('QC не запускался после сборки блоков.');
+  state.qc_report = buildAutomatedQcReport(state, 'stage_3_blocks');
 
   updatePipelineMeta(state, {
     ...buildStageProviderMetaPatch(state, response, 'stage_3_blocks'),
@@ -5773,6 +6030,7 @@ async function runStagePipeline({
       stage_3_output_mode: normalizedStage3OutputMode,
       source: 'mock'
     });
+    pipelineState.qc_report = buildAutomatedQcReport(pipelineState, 'stage_0_canon');
 
     return {
       pipelineState,
@@ -5799,42 +6057,63 @@ async function runStagePipeline({
     state.canon.top_traits = buildTopTraits(state.canon.personality_profile || {});
   }
 
+  assertNoBlockingQcChecks(state, normalizedStageKey);
+
   let modelUsed = null;
-  if (normalizedStageKey === 'stage_1_anchors') {
-    const response = await runStage1({
-      state,
-      generationType: normalizedGenerationType,
-      requestId
-    });
-    modelUsed = response.model;
-  } else if (normalizedStageKey === 'stage_2_fact_bank') {
-    const response = await runStage2({
-      state,
-      generationType: normalizedGenerationType,
-      requestId
-    });
-    modelUsed = response.model;
-  } else if (normalizedStageKey === 'stage_3_blocks') {
-    const response = await runStage3({
-      state,
-      generationType: normalizedGenerationType,
-      requestId,
-      outputMode: normalizedStage3OutputMode
-    });
-    modelUsed = response.model;
-  } else if (normalizedStageKey === 'stage_4_qc') {
-    const response = await runStage4({
-      state,
-      generationType: normalizedGenerationType,
-      requestId
-    });
-    modelUsed = response.model;
+  let source = 'gemini';
+  try {
+    if (normalizedStageKey === 'stage_1_anchors') {
+      const response = await runStage1({
+        state,
+        generationType: normalizedGenerationType,
+        requestId
+      });
+      modelUsed = response.model;
+    } else if (normalizedStageKey === 'stage_2_fact_bank') {
+      const response = await runStage2({
+        state,
+        generationType: normalizedGenerationType,
+        requestId
+      });
+      modelUsed = response.model;
+    } else if (normalizedStageKey === 'stage_3_blocks') {
+      const response = await runStage3({
+        state,
+        generationType: normalizedGenerationType,
+        requestId,
+        outputMode: normalizedStage3OutputMode
+      });
+      modelUsed = response.model;
+    } else if (normalizedStageKey === 'stage_4_qc') {
+      const response = await runStage4({
+        state,
+        generationType: normalizedGenerationType,
+        requestId
+      });
+      modelUsed = response.model;
+    }
+  } catch (error) {
+    if (['stage_1_anchors', 'stage_2_fact_bank', 'stage_3_blocks'].includes(normalizedStageKey)) {
+      const response = applyMockStageFallback({
+        state,
+        stageKey: normalizedStageKey,
+        normalizedStagePrompts,
+        normalizedStage3OutputMode,
+        normalizedFactPackages,
+        normalizedGenerationType,
+        error
+      });
+      modelUsed = response.model;
+      source = 'mock_fallback';
+    } else {
+      throw error;
+    }
   }
 
   return {
     pipelineState: state,
     finishReason: `PIPELINE_STAGE_COMPLETED:${normalizedStageKey}`,
-    source: 'gemini',
+    source,
     modelUsed
   };
 }

@@ -765,6 +765,39 @@ function QcStage({ app, act, run }: StageProps) {
   );
 }
 
+function StageChecks({ app }: { app: ProfileLegendController }) {
+  if (app.qcChecks.length === 0) {
+    return null;
+  }
+
+  return (
+    <section className="stage-card single-panel">
+      <div className="panel-actions">
+        <div>
+          <h2>Stage checks</h2>
+          <p className="panel-copy">{app.qcSummary || 'Automated cross-stage checks run after each step.'}</p>
+        </div>
+      </div>
+
+      <div className="qc-grid">
+        {app.qcChecks.map((check) => (
+          <article key={check.key} className={cn('qc-card', check.passed && 'ok', !check.passed && 'fail')}>
+            <h3>{check.title}</h3>
+            <p>{check.passed ? 'OK' : 'Fix needed'}</p>
+            {check.issues.length > 0 ? (
+              <ul>
+                {check.issues.map((issue) => (
+                  <li key={issue}>{issue}</li>
+                ))}
+              </ul>
+            ) : null}
+          </article>
+        ))}
+      </div>
+    </section>
+  );
+}
+
 function App() {
   const { controller: app, act, run } = useProfileLegendController();
 
@@ -864,7 +897,7 @@ function App() {
           {app.selectedStageView === 'stage_1_anchors' ? <AnchorsStage app={app} act={act} run={run} /> : null}
           {app.selectedStageView === 'stage_2_fact_bank' ? <FactBankStage app={app} act={act} run={run} /> : null}
           {app.selectedStageView === 'stage_3_blocks' ? <BlocksStage app={app} act={act} run={run} /> : null}
-          {app.selectedStageView === 'stage_4_qc' ? <QcStage app={app} act={act} run={run} /> : null}
+          <StageChecks app={app} />
         </section>
       </section>
     </main>

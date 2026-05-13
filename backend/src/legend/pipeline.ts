@@ -1775,6 +1775,231 @@ function buildCanonConflictResolution({ issue, traitKey, currentValue, suggested
   };
 }
 
+function firstNonEmptyValue(source, paths) {
+  for (const path of paths) {
+    const value = path.split('.').reduce((acc, key) => {
+      if (!acc || typeof acc !== 'object' || Array.isArray(acc)) {
+        return undefined;
+      }
+      return acc[key];
+    }, source);
+    if (value !== undefined && value !== null && safeString(value).trim()) {
+      return value;
+    }
+  }
+  return null;
+}
+
+function normalizeComparableText(value) {
+  return normalizeText(safeString(value))
+    .replace(/[^\p{L}\p{N}]+/gu, ' ')
+    .replace(/\s+/g, ' ')
+    .trim();
+}
+
+function extractLabeledText(text, labels) {
+  const source = safeString(text);
+  if (!source.trim()) {
+    return null;
+  }
+
+  for (const label of labels) {
+    const escaped = safeString(label).replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+    const match = source.match(new RegExp(`(?:^|[\\n,;.!?])\\s*${escaped}\\s*[:=\\-]\\s*([^\\n,;.!?]+)`, 'iu'));
+    const value = safeString(match?.[1]).trim();
+    if (value) {
+      return value;
+    }
+  }
+  return null;
+}
+
+function extractAdditionalAges(text) {
+  const source = safeString(text);
+  const ages = new Set();
+  const patterns = [
+    /\b(?:age|aged|возраст)\s*[:=\-]?\s*(\d{1,3})\b/giu,
+    /\b(\d{1,3})\s*(?:years?|y\.?\s*o\.?|yo|лет|года|год)(?:\s*old)?\b/giu
+  ];
+
+  for (const pattern of patterns) {
+    for (const match of source.matchAll(pattern)) {
+      const age = Number(match[1]);
+      if (Number.isFinite(age) && age >= 0 && age <= 120) {
+        ages.add(Math.round(age));
+      }
+    }
+  }
+
+  return Array.from(ages);
+}
+
+function extractMentionedEyeColors(text) {
+  const normalized = normalizeComparableText(text);
+  if (!normalized || !/\b(?:eye|eyes|глаз|глаза|глазами)\b/iu.test(normalized)) {
+    return [];
+  }
+
+  const colors = [
+    'blue',
+    'green',
+    'brown',
+    'hazel',
+    'gray',
+    'grey',
+    'black',
+    'amber',
+    'голубые',
+    'голубой',
+    'синие',
+    'синий',
+    'зеленые',
+    'зелёные',
+    'зеленый',
+    'зелёный',
+    'карие',
+    'карий',
+    'коричневые',
+    'коричневый',
+    'серые',
+    'серый'
+  ];
+
+  return colors.filter((color) => normalized.includes(normalizeComparableText(color)));
+}
+
+function extractAdditionalBirthYears(text) {
+  const source = safeString(text);
+  const years = new Set();
+  const patterns = [
+    /\b(?:born|birth(?:\s*date|\s*year)?|dob|родил[а-я]*|дата\s*рождения|год\s*рождения)\D{0,24}((?:19|20)\d{2})\b/giu,
+    /\b((?:19|20)\d{2})\D{0,24}(?:born|birth|родил[а-я]*|рождения)\b/giu
+  ];
+
+  for (const pattern of patterns) {
+    for (const match of source.matchAll(pattern)) {
+      const year = Number(match[1]);
+      if (Number.isFinite(year) && year >= 1900 && year <= 2100) {
+        years.add(Math.round(year));
+      }
+    }
+  }
+
+  return Array.from(years);
+}
+
+function extractLabeledNumber(text, labels, unitPattern = '') {
+  const labeled = extractLabeledText(text, labels);
+  if (!labeled) {
+    return null;
+  }
+  const unitSuffix = unitPattern ? `\\s*(?:${unitPattern})?` : '';
+  const match = labeled.match(new RegExp(`\\b(\\d{1,3}(?:[.,]\\d+)?)${unitSuffix}\\b`, 'iu'));
+  if (!match?.[1]) {
+    return null;
+  }
+  const number = Number(match[1].replace(',', '.'));
+  return Number.isFinite(number) ? Math.round(number) : null;
+}
+
+function isMeaningfullyDifferent(left, right) {
+  const normalizedLeft = normalizeComparableText(left);
+  const normalizedRight = normalizeComparableText(right);
+  if (!normalizedLeft || !normalizedRight || normalizedLeft === normalizedRight) {
+    return false;
+  }
+  return !normalizedLeft.includes(normalizedRight) && !normalizedRight.includes(normalizedLeft);
+}
+
+function buildGeneralAdditionalInfoIssues(person) {
+  const description = safeString(person?.description).trim();
+  if (!description) {
+    return [];
+  }
+
+  const issues = [];
+  const currentYear = new Date().getUTCFullYear();
+  const generalBirthYear = resolveBirthYear(person, currentYear);
+  const generalAge = resolveAge(person, generalBirthYear, currentYear);
+
+  for (const age of extractAdditionalAges(description)) {
+    if (Number.isFinite(generalAge) && age !== generalAge) {
+      issues.push(`General Info vs Additional Info conflict: General Info resolves age as ${generalAge}, but Additional Info states age ${age}.`);
+    }
+  }
+
+  for (const birthYear of extractAdditionalBirthYears(description)) {
+    if (Number.isFinite(generalBirthYear) && birthYear !== generalBirthYear) {
+      issues.push(
+        `General Info vs Additional Info conflict: General Info birth year is ${generalBirthYear}, but Additional Info states birth year ${birthYear}.`
+      );
+    }
+  }
+
+  const numericChecks = [
+    {
+      field: 'height_weight.height_cm',
+      value: firstNonEmptyValue(person, ['height_weight.height_cm', 'height']),
+      additionalValue: extractLabeledNumber(description, ['height', 'height_cm', 'рост'], 'cm|см'),
+      tolerance: 1,
+      label: 'height'
+    },
+    {
+      field: 'height_weight.weight_kg',
+      value: firstNonEmptyValue(person, ['height_weight.weight_kg', 'weight']),
+      additionalValue: extractLabeledNumber(description, ['weight', 'weight_kg', 'вес'], 'kg|кг'),
+      tolerance: 1,
+      label: 'weight'
+    }
+  ];
+
+  for (const check of numericChecks) {
+    const generalValue = Number(check.value);
+    if (Number.isFinite(generalValue) && Number.isFinite(check.additionalValue) && Math.abs(Math.round(generalValue) - check.additionalValue) > check.tolerance) {
+      issues.push(
+        `General Info vs Additional Info conflict: General Info ${check.field} is ${Math.round(generalValue)}, but Additional Info states ${check.label} ${check.additionalValue}.`
+      );
+    }
+  }
+
+  const textChecks = [
+    { field: 'current_location.country', labels: ['country', 'страна'], paths: ['current_location.country', 'country'] },
+    { field: 'current_location.city', labels: ['city', 'город'], paths: ['current_location.city', 'city'] },
+    { field: 'eye_color', labels: ['eye color', 'eyes', 'color of eyes', 'цвет глаз'], paths: ['eye_color', 'eyes'] },
+    { field: 'hair_color', labels: ['hair color', 'hair', 'color of hair', 'цвет волос'], paths: ['hair_color', 'hair'] },
+    { field: 'education.degree', labels: ['education', 'образование'], paths: ['education.degree', 'education', 'generalInfo.education'] },
+    { field: 'job.title', labels: ['occupation', 'job', 'work', 'profession', 'работа', 'профессия'], paths: ['job.title', 'occupation'] },
+    { field: 'relationship_status', labels: ['marital status', 'relationship status', 'status', 'семейное положение'], paths: ['relationship_status', 'maritalStatus'] }
+  ];
+
+  for (const check of textChecks) {
+    const generalValue = firstNonEmptyValue(person, check.paths);
+    const additionalValue = extractLabeledText(description, check.labels);
+    if (generalValue && additionalValue && isMeaningfullyDifferent(generalValue, additionalValue)) {
+      issues.push(
+        `General Info vs Additional Info conflict: General Info ${check.field} is "${safeString(generalValue).trim()}", but Additional Info states "${safeString(additionalValue).trim()}".`
+      );
+    }
+  }
+
+  const generalEyeColor = firstNonEmptyValue(person, ['eye_color', 'eyes']);
+  const mentionedEyeColors = extractMentionedEyeColors(description);
+  if (generalEyeColor && mentionedEyeColors.length > 0) {
+    const normalizedGeneralEyeColor = normalizeComparableText(generalEyeColor);
+    const conflictingEyeColor = mentionedEyeColors.find((color) => {
+      const normalizedColor = normalizeComparableText(color);
+      return normalizedColor && normalizedGeneralEyeColor && !normalizedGeneralEyeColor.includes(normalizedColor);
+    });
+    if (conflictingEyeColor) {
+      issues.push(
+        `General Info vs Additional Info conflict: General Info eye_color is "${safeString(generalEyeColor).trim()}", but Additional Info mentions "${conflictingEyeColor}" eyes.`
+      );
+    }
+  }
+
+  return issues;
+}
+
 function validateCanonProfileConsistency(personInput, payloadProfile) {
   const person = personInput && typeof personInput === 'object' && !Array.isArray(personInput) ? personInput : {};
   const profile = normalizeProfile(payloadProfile || {});
@@ -1801,6 +2026,19 @@ function validateCanonProfileConsistency(personInput, payloadProfile) {
 
     seenResolutionKeys.add(resolutionKey);
     issueResolutions.push(resolution);
+  }
+
+  const inputConsistencyIssues = buildGeneralAdditionalInfoIssues(person);
+  for (const issue of inputConsistencyIssues) {
+    pushIssue(issue);
+  }
+
+  if (inputConsistencyIssues.length > 0) {
+    return {
+      passed: false,
+      issues,
+      issue_resolutions: issueResolutions
+    };
   }
 
   for (const rule of CANON_PROFILE_KEYWORD_RULES) {
