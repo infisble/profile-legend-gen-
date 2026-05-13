@@ -3384,8 +3384,10 @@ export class ProfileLegendController {
   }
 
   private resolveApiUrl(): string {
+    // return 'https://test-api.besocial.tech/stack-ai/legend/generate-profile';
+
     if (typeof window === 'undefined' || !window.location) {
-      return 'http://localhost:3001/api/generate-profile';
+      return 'http://localhost:3001/stack-ai/legend/generate-profile';
     }
 
     const { protocol, hostname, origin, port } = window.location;
@@ -3393,18 +3395,18 @@ export class ProfileLegendController {
     const isDevHost = isLocalHost && (port === '4200' || port === '5173');
 
     if (protocol === 'http:' && isDevHost) {
-      return 'http://localhost:3001/api/generate-profile';
+      return 'http://localhost:3001/stack-ai/legend/generate-profile';
     }
 
-    return `${origin}/api/generate-profile`;
+    return `${origin}/stack-ai/legend/generate-profile`;
   }
 
   private resolveCanonConsistencyApiUrl(): string {
-    return this.resolveApiUrl().replace('/api/generate-profile', '/api/check-canon-consistency');
+    return this.resolveApiUrl().replace('/generate-profile', '/check-canon-consistency');
   }
 
   private resolveTranslateOutputApiUrl(): string {
-    return this.resolveApiUrl().replace('/api/generate-profile', '/api/translate-output');
+    return this.resolveApiUrl().replace('/generate-profile', '/translate-output');
   }
 
   private tryParseRawJson(raw: string): unknown {
