@@ -1719,6 +1719,7 @@ function buildCanonTextClues(personInput = {}) {
   }
 
   push('first_impression', person.first_impression);
+  push('description', person.description);
   push('temperament', person.temperament);
   push('distinctive_features', person.distinctive_features);
   push('dream', person.dream);
@@ -1744,7 +1745,8 @@ function previewCanonClue(text) {
 function findCanonKeywordClue(clues, fieldPaths, keywords) {
   const normalizedKeywords = keywords.map((item) => normalizeText(item)).filter(Boolean);
   for (const clue of clues) {
-    if (Array.isArray(fieldPaths) && fieldPaths.length > 0 && !fieldPaths.includes(clue.path)) {
+    const descriptionFallback = clue.path === 'description';
+    if (Array.isArray(fieldPaths) && fieldPaths.length > 0 && !fieldPaths.includes(clue.path) && !descriptionFallback) {
       continue;
     }
     if (normalizedKeywords.some((keyword) => clue.normalized.includes(keyword))) {
@@ -1752,6 +1754,164 @@ function findCanonKeywordClue(clues, fieldPaths, keywords) {
     }
   }
   return null;
+}
+
+function extractDescriptionAgeClaims(text) {
+  const source = safeString(text);
+  const claims = [];
+  const patterns = [
+    /(?:age\s*(?:is)?\s*|aged\s*|approximately\s*|about\s*|around\s*|примерно\s*|приблизно\s*|около\s*)?(\d{1,2})\s*(?:years?\s*old|y\.?\s*o\.?|yo|рок(?:ів|и|у)?|лет|года?|річн\w*)/giu,
+    /(\d{1,2})\s*[- ]?(?:year-old|рок(?:ів|и|у)?|лет|года?|річн\w*)/giu
+  ];
+
+  for (const pattern of patterns) {
+    for (const match of source.matchAll(pattern)) {
+      const age = Number(match[1]);
+      if (Number.isFinite(age) && age >= 16 && age <= 90) {
+        claims.push(age);
+      }
+    }
+  }
+
+  return Array.from(new Set(claims));
+}
+
+function getTokenWindowsForKeywords(text, keywords, radius = 6) {
+  const normalized = normalizeText(text);
+  const tokens = normalized.split(' ').filter(Boolean);
+  const windows = [];
+  if (tokens.length === 0) {
+    return windows;
+  }
+
+  const normalizedKeywords = keywords.map((item) => normalizeText(item)).filter(Boolean);
+  for (let index = 0; index < tokens.length; index += 1) {
+    if (!normalizedKeywords.some((keyword) => tokens[index].includes(keyword) || keyword.includes(tokens[index]))) {
+      continue;
+    }
+    const start = Math.max(0, index - radius);
+    const end = Math.min(tokens.length, index + radius + 1);
+    windows.push(tokens.slice(start, end).join(' '));
+  }
+
+  return windows;
+}
+
+const DESCRIPTION_COLOR_GROUPS = Object.freeze({
+  hair: [
+    { key: 'black', label: 'black', terms: ['black', 'jet black', 'чорн', 'черн'] },
+    { key: 'dark_brown', label: 'dark brown', terms: ['dark brown', 'brunette', 'брюнет', 'темно каштан', 'темно корич'] },
+    { key: 'brown', label: 'brown', terms: ['brown', 'chestnut', 'каштан', 'коричнев'] },
+    { key: 'dark_blonde', label: 'dark blonde', terms: ['dark blonde', 'dirty blonde', 'темно рус', 'темно русяв', 'русяв', 'рус'] },
+    { key: 'blonde', label: 'blonde', terms: ['blonde', 'блонд', 'светл', 'світл'] },
+    { key: 'red', label: 'red', terms: ['red hair', 'ginger', 'auburn', 'рыж', 'руд'] },
+    { key: 'gray', label: 'gray', terms: ['gray', 'grey', 'silver', 'сед', 'сив'] }
+  ],
+  eyes: [
+    { key: 'brown', label: 'brown', terms: ['brown', 'hazel', 'кар', 'коричнев'] },
+    { key: 'blue', label: 'blue', terms: ['blue', 'голуб', 'блакитн', 'син'] },
+    { key: 'green', label: 'green', terms: ['green', 'зелен'] },
+    { key: 'gray', label: 'gray', terms: ['gray', 'grey', 'сер', 'сір'] },
+    { key: 'black', label: 'black', terms: ['black', 'чорн', 'черн'] }
+  ]
+});
+
+function detectColorGroup(value, kind) {
+  const normalized = normalizeText(value);
+  if (!normalized) {
+    return null;
+  }
+
+  for (const group of DESCRIPTION_COLOR_GROUPS[kind] || []) {
+    if (group.terms.some((term) => normalized.includes(normalizeText(term)))) {
+      return group;
+    }
+  }
+  return null;
+}
+
+function detectDescriptionColorGroups(description, kind) {
+  const contextKeywords =
+    kind === 'hair'
+      ? ['hair', 'волос', 'волосся', 'волосы', 'блондин', 'брюнет', 'шатен']
+      : ['eye', 'eyes', 'очі', 'очи', 'глаз', 'очей'];
+  const windows = getTokenWindowsForKeywords(description, contextKeywords);
+  const groups = [];
+
+  for (const window of windows) {
+    const group = detectColorGroup(window, kind);
+    if (group && !groups.some((item) => item.key === group.key)) {
+      groups.push(group);
+    }
+  }
+
+  return groups;
+}
+
+function extractDescriptionNumberWithUnit(text, units) {
+  const source = safeString(text);
+  const normalizedUnits = units.join('|');
+  const pattern = new RegExp(`(\\d{2,3})\\s*(?:${normalizedUnits})`, 'giu');
+  const values = [];
+  for (const match of source.matchAll(pattern)) {
+    const value = Number(match[1]);
+    if (Number.isFinite(value)) {
+      values.push(value);
+    }
+  }
+  return Array.from(new Set(values));
+}
+
+function buildDescriptionStructuredFactIssues(person) {
+  const description = safeString(person?.description).trim();
+  if (!description) {
+    return [];
+  }
+
+  const issues = [];
+  const currentYear = new Date().getUTCFullYear();
+  const birthYear = resolveBirthYear(person, currentYear);
+  const expectedAge = resolveAge(person, birthYear, currentYear);
+  const birthLabel = safeString(person?.birth_date || person?.birth_year).trim();
+  for (const ageClaim of extractDescriptionAgeClaims(description)) {
+    if (Number.isFinite(expectedAge) && Math.abs(ageClaim - expectedAge) > 2) {
+      issues.push(
+        `description says the woman is about ${ageClaim}, but birth_date/birth_year (${birthLabel || 'not set'}) gives age ${expectedAge}.`
+      );
+    }
+  }
+
+  const expectedHair = detectColorGroup(person?.hair_color, 'hair');
+  const descriptionHairGroups = detectDescriptionColorGroups(description, 'hair');
+  if (expectedHair && descriptionHairGroups.length > 0 && !descriptionHairGroups.some((group) => group.key === expectedHair.key)) {
+    issues.push(
+      `description hair color (${descriptionHairGroups.map((group) => group.label).join(', ')}) contradicts hair_color (${safeString(person?.hair_color).trim()}).`
+    );
+  }
+
+  const expectedEyes = detectColorGroup(person?.eye_color, 'eyes');
+  const descriptionEyeGroups = detectDescriptionColorGroups(description, 'eyes');
+  if (expectedEyes && descriptionEyeGroups.length > 0 && !descriptionEyeGroups.some((group) => group.key === expectedEyes.key)) {
+    issues.push(
+      `description eye color (${descriptionEyeGroups.map((group) => group.label).join(', ')}) contradicts eye_color (${safeString(person?.eye_color).trim()}).`
+    );
+  }
+
+  const height = Number(person?.height_weight?.height_cm ?? person?.height);
+  for (const heightClaim of extractDescriptionNumberWithUnit(description, ['cm', 'см', 'сантиметр\\w*'])) {
+    if (Number.isFinite(height) && heightClaim >= 120 && heightClaim <= 230 && Math.abs(heightClaim - height) > 3) {
+      issues.push(`description height (${heightClaim} cm) contradicts height_weight.height_cm (${Math.round(height)} cm).`);
+    }
+  }
+
+  const weight = Number(person?.height_weight?.weight_kg ?? person?.weight);
+  for (const weightClaim of extractDescriptionNumberWithUnit(description, ['kg', 'кг', 'кілограм\\w*', 'килограмм\\w*'])) {
+    if (Number.isFinite(weight) && weightClaim >= 35 && weightClaim <= 180 && Math.abs(weightClaim - weight) > 3) {
+      issues.push(`description weight (${weightClaim} kg) contradicts height_weight.weight_kg (${Math.round(weight)} kg).`);
+    }
+  }
+
+  return issues;
 }
 
 function buildCanonConflictResolution({ issue, traitKey, currentValue, suggestedValue, reason = '', sourceField = '' }) {
@@ -1835,6 +1995,56 @@ function validateCanonProfileConsistency(personInput, payloadProfile) {
         suggestedValue: rule.direction === 'high' ? rule.scoreThreshold + 1 : rule.scoreThreshold - 1,
         reason: `Сигнал найден в поле ${match.path}.`,
         sourceField: match.path
+      })
+    );
+  }
+
+  for (const message of buildDescriptionStructuredFactIssues(person)) {
+    pushIssue(message);
+  }
+
+  const descriptionText = normalizeText(person?.description);
+  const descriptionTraitRules = [
+    {
+      traitKey: 'achievement_drive',
+      threshold: 5,
+      suggestedValue: 7,
+      keywords: ['ambitious', 'goal oriented', 'амбитн', 'амбітн', 'целеустрем', 'цілеспрям']
+    },
+    {
+      traitKey: 'confidence',
+      threshold: 5,
+      suggestedValue: 7,
+      keywords: ['confident', 'charismatic', 'charisma', 'уверенн', 'впевнен', 'харизм']
+    },
+    {
+      traitKey: 'social_connection',
+      threshold: 5,
+      suggestedValue: 7,
+      keywords: ['charming', 'communicative', 'sociable', 'привлекательн', 'приваблив', 'легко привертає увагу', 'общительн']
+    }
+  ];
+  for (const rule of descriptionTraitRules) {
+    const score = Number(profile[rule.traitKey]);
+    if (!descriptionText || !Number.isFinite(score) || score > rule.threshold) {
+      continue;
+    }
+    const matchedKeyword = rule.keywords.find((keyword) => descriptionText.includes(normalizeText(keyword)));
+    if (!matchedKeyword) {
+      continue;
+    }
+
+    const traitLabel = PERSONALITY_CRITERIA_BY_KEY[rule.traitKey]?.label || rule.traitKey;
+    const message = `description contains a clear "${matchedKeyword}" signal, but scale "${traitLabel}" is only ${score}/10.`;
+    pushIssue(
+      message,
+      buildCanonConflictResolution({
+        issue: message,
+        traitKey: rule.traitKey,
+        currentValue: score,
+        suggestedValue: rule.suggestedValue,
+        reason: 'The signal was found in description.',
+        sourceField: 'description'
       })
     );
   }

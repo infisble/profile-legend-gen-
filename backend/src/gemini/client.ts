@@ -114,7 +114,7 @@ function resolveAuthConfig({ generationType, requestId, timeoutMs = null }) {
   const model = resolveModel(generationType);
   const accessToken = safeString(readEnv('BESCO_GEMINI_ACCESS_TOKEN', readEnv('GEMINI_ACCESS_TOKEN', ''))).trim();
   const apiKeys = resolveApiKeys();
-  const apiKey = pickApiKey(apiKeys, requestId);
+  const apiKey = endpointMode === 'vertex' ? '' : pickApiKey(apiKeys, requestId);
 
   const apiBase =
     safeString(readEnv('BESCO_GEMINI_API_BASE', '')).trim() ||
@@ -184,7 +184,11 @@ function buildGeminiEmptyContentError(raw, parsed): ExtendedError {
 async function generateGeminiJson({ prompt, generationType = 'type-pro', requestId = '', timeoutMs = null }) {
   const config = resolveAuthConfig({ generationType, requestId, timeoutMs });
   if (!config.apiKey && !config.accessToken) {
-    throw new Error('Gemini credentials are not configured. Set BESCO_GEMINI_API_KEY or BESCO_GEMINI_ACCESS_TOKEN.');
+    throw new Error(
+      config.endpointMode === 'vertex'
+        ? 'Gemini Vertex mode requires BESCO_GEMINI_ACCESS_TOKEN or GEMINI_ACCESS_TOKEN. API keys are only supported with BESCO_GEMINI_ENDPOINT_MODE=gemini.'
+        : 'Gemini credentials are not configured. Set BESCO_GEMINI_API_KEY or BESCO_GEMINI_ACCESS_TOKEN.'
+    );
   }
 
   const url = buildGenerateUrl(config);

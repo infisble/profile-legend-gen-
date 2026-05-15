@@ -2064,6 +2064,82 @@ function normalizeCanonConsistencyReport(rawReport, fallback = {}) {
   };
 }
 
+function buildCanonConsistencyIssueSignature(issue) {
+  const normalized = normalizeText(issue);
+  if (!normalized) {
+    return '';
+  }
+
+  const mentionsDescription = normalized.includes('description');
+  const mentionsAge =
+    normalized.includes('age') ||
+    normalized.includes('возраст') ||
+    normalized.includes('рок') ||
+    normalized.includes('лет') ||
+    normalized.includes('year');
+  const mentionsBirth = normalized.includes('birth') || normalized.includes('рожд');
+  if (mentionsDescription && mentionsAge && mentionsBirth) {
+    return 'description:age';
+  }
+
+  for (const criterion of PERSONALITY_CRITERIA) {
+    const criterionKey = normalizeText(criterion.key);
+    const criterionLabel = normalizeText(criterion.label);
+    if ((criterionKey && normalized.includes(criterionKey)) || (criterionLabel && normalized.includes(criterionLabel))) {
+      return `trait:${criterion.key}`;
+    }
+  }
+
+  const keywordTraitMap = {
+    achievement_drive: ['ambitious', 'амбит', 'амбіт', 'целеустрем', 'цілеспрям', 'achievement'],
+    confidence: ['confidence', 'confident', 'charisma', 'харизм', 'уверенн', 'впевнен'],
+    social_connection: ['social', 'charming', 'приваблив', 'привлекательн', 'общительн']
+  };
+  for (const [traitKey, keywords] of Object.entries(keywordTraitMap)) {
+    if (keywords.some((keyword) => normalized.includes(normalizeText(keyword)))) {
+      return `trait:${traitKey}`;
+    }
+  }
+
+  return normalized.slice(0, 120);
+}
+
+function mergeCanonConsistencyIssues(geminiIssues, heuristicIssues) {
+  const merged = [];
+  const seen = new Set();
+  const normalizedGeminiIssues = normalizeStringList(geminiIssues);
+  const normalizedHeuristicIssues = normalizeStringList(heuristicIssues);
+
+  for (const issue of normalizedHeuristicIssues) {
+    const signature = buildCanonConsistencyIssueSignature(issue) || issue;
+    if (!signature.startsWith('description:') || seen.has(signature)) {
+      continue;
+    }
+    seen.add(signature);
+    merged.push(issue);
+  }
+
+  for (const issue of normalizedGeminiIssues) {
+    const signature = buildCanonConsistencyIssueSignature(issue) || issue;
+    if (seen.has(signature)) {
+      continue;
+    }
+    seen.add(signature);
+    merged.push(issue);
+  }
+
+  for (const issue of normalizedHeuristicIssues) {
+    const signature = buildCanonConsistencyIssueSignature(issue) || issue;
+    if (seen.has(signature)) {
+      continue;
+    }
+    seen.add(signature);
+    merged.push(issue);
+  }
+
+  return merged;
+}
+
 function buildCanon(personInput, profileInput) {
   const person = normalizeIncomingPerson(personInput);
   const profile = normalizeProfile(profileInput);
@@ -3367,6 +3443,13 @@ ${BASE_JSON_RULES_EN}
 Вспомогательные эвристические сигналы:
 ${JSON.stringify(heuristicIssues, null, 2)}
 
+Additional hard checks:
+- Treat Canon JSON description as user input, not decoration.
+- Compare description against structured fields: birth_date/birth_year/age, gender, hair_color, eye_color, height_weight, job, education, country/current_location, relationship_status.
+- If description says "about 25 years old" but birth_date implies a materially different age, passed=false and add an issue.
+- If description says a different hair color, eye color, height, weight, gender, location, occupation, education, or relationship state than structured fields, passed=false and add an issue.
+- These internal Canon-vs-description contradictions are errors even when personality_profile is otherwise acceptable.
+
 Criteria spec JSON:
 ${JSON.stringify(criteriaSpec, null, 2)}
 
@@ -3417,7 +3500,7 @@ async function runCanonProfileConsistencyCheck({
     warning = error instanceof Error ? error.message : String(error);
   }
 
-  const mergedIssues = normalizeStringList([...(geminiReport?.issues || []), ...heuristic.issues]);
+  const mergedIssues = mergeCanonConsistencyIssues(geminiReport?.issues || [], heuristic.issues);
   const passed = Boolean(geminiReport ? geminiReport.passed && heuristic.passed : heuristic.passed);
   const report = normalizeCanonConsistencyReport(
     {
