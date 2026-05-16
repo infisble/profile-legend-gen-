@@ -277,7 +277,7 @@ function AnchorsStage({ app, act, run }: StageProps) {
               void run(() => app.translateAnchors());
             }}
           >
-            Translate
+            Translate all
           </button>
           <span className={cn('count-chip', !app.hasValidAnchorCount && 'invalid')}>{`${app.anchorCount} anchors | required 8-12`}</span>
         </div>
@@ -307,6 +307,16 @@ function AnchorsStage({ app, act, run }: StageProps) {
                       }}
                     >
                       Delete anchor
+                    </button>
+                    <button
+                      type="button"
+                      className="outline-button small"
+                      disabled={app.isBusy}
+                      onClick={() => {
+                        void run(() => app.translateAnchor(anchorIndex));
+                      }}
+                    >
+                      Translate
                     </button>
                     <button
                       type="button"
@@ -410,12 +420,52 @@ function AnchorsStage({ app, act, run }: StageProps) {
           className="outline-button"
           disabled={!app.canGenerateAdditionalAnchor}
           onClick={() => {
-            void run(() => app.generateSingleAnchor());
+            act(() => app.toggleAdditionalAnchorPanel());
           }}
         >
           Add anchor
         </button>
       </div>
+      {app.showAdditionalAnchorComment ? (
+        <div className="anchor-regenerate-box add-item-panel">
+          <label className="anchor-regenerate-field">
+            <span>What anchor should be added</span>
+            <textarea
+              value={app.additionalAnchorComment}
+              onChange={(event) => {
+                act(() => {
+                  app.additionalAnchorComment = event.target.value;
+                });
+              }}
+              className="anchor-comment-textarea"
+              rows={4}
+              placeholder="Describe the exact anchor or life turning point that should appear"
+            />
+          </label>
+          <div className="anchor-regenerate-actions">
+            <button
+              type="button"
+              className="outline-button"
+              disabled={app.isBusy}
+              onClick={() => {
+                act(() => app.cancelAdditionalAnchor());
+              }}
+            >
+              Cancel
+            </button>
+            <button
+              type="button"
+              className="panel-button"
+              disabled={app.isBusy}
+              onClick={() => {
+                void run(() => app.generateSingleAnchor());
+              }}
+            >
+              Generate anchor
+            </button>
+          </div>
+        </div>
+      ) : null}
     </section>
   );
 }
@@ -438,7 +488,7 @@ function FactBankStage({ app, act, run }: StageProps) {
               void run(() => app.translateFacts());
             }}
           >
-            Translate
+            Translate all
           </button>
           <span className={cn('count-chip', !app.hasValidFactCount && 'invalid')}>{`${app.factCount} facts | required 150-220`}</span>
         </div>
@@ -478,6 +528,16 @@ function FactBankStage({ app, act, run }: StageProps) {
                       }}
                     >
                       Delete fact
+                    </button>
+                    <button
+                      type="button"
+                      className="outline-button small"
+                      disabled={app.isBusy}
+                      onClick={() => {
+                        void run(() => app.translateFact(factIndex));
+                      }}
+                    >
+                      Translate
                     </button>
                     <button
                       type="button"
@@ -557,12 +617,52 @@ function FactBankStage({ app, act, run }: StageProps) {
           className="outline-button"
           disabled={!app.canGenerateAdditionalFact}
           onClick={() => {
-            void run(() => app.generateSingleFact());
+            act(() => app.toggleAdditionalFactPanel());
           }}
         >
           Add fact
         </button>
       </div>
+      {app.showAdditionalFactComment ? (
+        <div className="anchor-regenerate-box add-item-panel">
+          <label className="anchor-regenerate-field">
+            <span>What fact should be added</span>
+            <textarea
+              value={app.additionalFactComment}
+              onChange={(event) => {
+                act(() => {
+                  app.additionalFactComment = event.target.value;
+                });
+              }}
+              className="anchor-comment-textarea"
+              rows={4}
+              placeholder="Describe the exact fact you want to see in the fact bank"
+            />
+          </label>
+          <div className="anchor-regenerate-actions">
+            <button
+              type="button"
+              className="outline-button"
+              disabled={app.isBusy}
+              onClick={() => {
+                act(() => app.cancelAdditionalFact());
+              }}
+            >
+              Cancel
+            </button>
+            <button
+              type="button"
+              className="panel-button"
+              disabled={app.isBusy}
+              onClick={() => {
+                void run(() => app.generateSingleFact());
+              }}
+            >
+              Generate fact
+            </button>
+          </div>
+        </div>
+      ) : null}
     </section>
   );
 }

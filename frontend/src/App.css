@@ -694,6 +694,13 @@
   border-top: 1px solid var(--border-soft);
 }
 
+.add-item-panel {
+  padding: 12px;
+  border: 1px solid var(--border-soft);
+  border-radius: 8px;
+  background: #f9fbff;
+}
+
 .anchor-regenerate-field {
   display: grid;
   gap: 8px;

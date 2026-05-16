@@ -485,6 +485,8 @@ export class ProfileLegendController {
   canonConsistencyReport: CanonConsistencyReport | null = null;
   anchorRegenerationIndex: number | null = null;
   anchorRegenerationComment = '';
+  showAdditionalAnchorComment = false;
+  additionalAnchorComment = '';
   translatedLegendBlocks: Record<string, string> = {};
   translatedAnchors: Record<string, AnchorItem> = {};
   translatedFacts: Record<string, FactItem> = {};
@@ -492,6 +494,8 @@ export class ProfileLegendController {
   translatedDatingSiteTexts: DatingSiteTexts = { profile_description: '', looking_for_partner: '' };
   factRegenerationIndex: number | null = null;
   factRegenerationComment = '';
+  showAdditionalFactComment = false;
+  additionalFactComment = '';
 
   editableAnchorsJson = '';
   editableFactsJson = '';
@@ -1068,6 +1072,35 @@ export class ProfileLegendController {
     this.noticeMessage = 'Russian translation for anchors is ready.';
   }
 
+  async translateAnchor(index: number): Promise<void> {
+    if (this.isBusy || index < 0 || index >= this.anchors.length) {
+      return;
+    }
+
+    const anchor = this.anchors[index];
+    const data = await this.executeTranslationRequest({
+      mode: 'anchors',
+      target_language: 'Russian',
+      generation_type: 'type-flash',
+      anchors: [anchor]
+    });
+    const translatedAnchors = this.normalizeAnchorItems(data?.result?.translated_anchors || []);
+    const translatedAnchor = translatedAnchors[0];
+    if (!translatedAnchor) {
+      this.errorMessage = 'Translator did not return translated anchor.';
+      return;
+    }
+
+    const key = this.resolveAnchorTranslationKey(anchor, index);
+    if (key) {
+      this.translatedAnchors = {
+        ...this.translatedAnchors,
+        [key]: translatedAnchor
+      };
+    }
+    this.noticeMessage = 'Russian translation for this anchor is ready.';
+  }
+
   async translateFacts(): Promise<void> {
     if (!this.canTranslateFacts) {
       return;
@@ -1093,6 +1126,35 @@ export class ProfileLegendController {
       return acc;
     }, {} as Record<string, FactItem>);
     this.noticeMessage = 'Russian translation for facts is ready.';
+  }
+
+  async translateFact(index: number): Promise<void> {
+    if (this.isBusy || index < 0 || index >= this.factBank.length) {
+      return;
+    }
+
+    const fact = this.factBank[index];
+    const data = await this.executeTranslationRequest({
+      mode: 'facts',
+      target_language: 'Russian',
+      generation_type: 'type-flash',
+      facts: [fact]
+    });
+    const translatedFacts = this.normalizeFactItems(data?.result?.translated_facts || []);
+    const translatedFact = translatedFacts[0];
+    if (!translatedFact) {
+      this.errorMessage = 'Translator did not return translated fact.';
+      return;
+    }
+
+    const key = this.resolveFactTranslationKey(fact, index);
+    if (key) {
+      this.translatedFacts = {
+        ...this.translatedFacts,
+        [key]: translatedFact
+      };
+    }
+    this.noticeMessage = 'Russian translation for this fact is ready.';
   }
 
   async translateLegendFullText(): Promise<void> {
@@ -1208,6 +1270,19 @@ export class ProfileLegendController {
     this.anchorRegenerationComment = '';
   }
 
+  toggleAdditionalAnchorPanel(): void {
+    if (this.isBusy) {
+      return;
+    }
+    this.showAdditionalAnchorComment = !this.showAdditionalAnchorComment;
+    this.errorMessage = '';
+  }
+
+  cancelAdditionalAnchor(): void {
+    this.showAdditionalAnchorComment = false;
+    this.additionalAnchorComment = '';
+  }
+
   toggleFactRegeneration(index: number): void {
     if (this.isBusy) {
       return;
@@ -1225,6 +1300,19 @@ export class ProfileLegendController {
   cancelFactRegeneration(): void {
     this.factRegenerationIndex = null;
     this.factRegenerationComment = '';
+  }
+
+  toggleAdditionalFactPanel(): void {
+    if (this.isBusy) {
+      return;
+    }
+    this.showAdditionalFactComment = !this.showAdditionalFactComment;
+    this.errorMessage = '';
+  }
+
+  cancelAdditionalFact(): void {
+    this.showAdditionalFactComment = false;
+    this.additionalFactComment = '';
   }
 
   deleteAnchor(index: number): void {
@@ -1307,6 +1395,12 @@ export class ProfileLegendController {
       this.errorMessage = `You can add anchors only while the total is below ${MAX_ANCHORS_ALLOWED}.`;
       return;
     }
+    const comment = this.additionalAnchorComment.trim();
+    if (!comment) {
+      this.errorMessage = 'Add a comment describing what exact anchor should be added.';
+      this.showAdditionalAnchorComment = true;
+      return;
+    }
 
     let payload: Record<string, unknown>;
     try {
@@ -1316,7 +1410,7 @@ export class ProfileLegendController {
         generation_type: 'type-flash',
         pipeline_state: this.pipelineState,
         stage_prompts: {
-          stage_1_anchors_prompt: this.buildAdditionalAnchorPrompt()
+          stage_1_anchors_prompt: this.buildAdditionalAnchorPrompt(comment)
         }
       };
     } catch (error) {
@@ -1338,6 +1432,7 @@ export class ProfileLegendController {
 
     const nextAnchors = [...this.anchors, newAnchor];
     this.commitAnchorTimeline(nextAnchors, 'single_append', `One anchor added. Current total: ${nextAnchors.length}.`);
+    this.cancelAdditionalAnchor();
   }
 
   deleteFact(index: number): void {
@@ -1420,6 +1515,12 @@ export class ProfileLegendController {
       this.errorMessage = 'Add fact is available only after the fact bank already exists.';
       return;
     }
+    const comment = this.additionalFactComment.trim();
+    if (!comment) {
+      this.errorMessage = 'Add a comment describing what exact fact should be added.';
+      this.showAdditionalFactComment = true;
+      return;
+    }
 
     let payload: Record<string, unknown>;
     try {
@@ -1427,9 +1528,10 @@ export class ProfileLegendController {
         ...this.buildBasePayload('blocks'),
         run_stage: 'stage_2_fact_bank',
         generation_type: 'type-flash',
+        fact_comment: comment,
         pipeline_state: this.pipelineState,
         stage_prompts: {
-          stage_2_fact_bank_prompt: this.buildAdditionalFactPrompt()
+          stage_2_fact_bank_prompt: this.buildAdditionalFactPrompt(comment)
         }
       };
     } catch (error) {
@@ -1451,6 +1553,7 @@ export class ProfileLegendController {
 
     const nextFacts = [...this.factBank, newFact];
     this.commitFactBank(nextFacts, 'single_append', `One fact added. Current total: ${nextFacts.length}.`);
+    this.cancelAdditionalFact();
   }
 
   async checkCanonConsistency(): Promise<void> {
@@ -2027,14 +2130,15 @@ export class ProfileLegendController {
     ].join('\n\n');
   }
 
-  private buildAdditionalAnchorPrompt(): string {
+  private buildAdditionalAnchorPrompt(comment: string): string {
     const targetCount = this.buildAnchorCountTarget(this.anchorCount + 1);
     return [
       ANCHOR_STAGE_PROMPT_BASE,
       'Special task: preserve the current draft anchors as much as possible and add one new non-duplicate anchor.',
       `Return ${targetCount} anchors_timeline items in total.`,
-      'The new anchor should fill a missing period, sphere, or causal gap, and it must not duplicate an existing event.',
+      'The new anchor must directly follow the user comment below and should fill a missing period, sphere, or causal gap without duplicating an existing event.',
       `Current draft anchors JSON:\n${JSON.stringify(this.anchors, null, 2)}`,
+      `User requested anchor:\n${comment}`,
       `Regeneration nonce: ${new Date().toISOString()}`
     ].join('\n\n');
   }
@@ -2059,15 +2163,17 @@ export class ProfileLegendController {
     ].join('\n\n');
   }
 
-  private buildAdditionalFactPrompt(): string {
+  private buildAdditionalFactPrompt(comment: string): string {
     const targetCount = this.buildFactCountTarget(this.factBank.length + 1);
     return [
       FACT_STAGE_PROMPT_BASE,
       'Special task: preserve the current draft fact bank as much as possible and add one new non-duplicate fact.',
       `Return exactly ${targetCount} fact_bank items in total.`,
+      'The new fact must directly satisfy the user comment below. Split the requested idea into one concrete atomic fact with year/age, sphere, source, and observable consequence.',
       'The new fact should fill a missing period, sphere, routine, or causal consequence, and it must not duplicate an existing fact.',
       `Current draft fact_bank JSON:\n${JSON.stringify(this.factBank, null, 2)}`,
       `Anchors timeline JSON:\n${JSON.stringify(this.anchors, null, 2)}`,
+      `User requested fact:\n${comment}`,
       `Regeneration nonce: ${new Date().toISOString()}`
     ].join('\n\n');
   }
@@ -3317,8 +3423,12 @@ export class ProfileLegendController {
     this.qcSummary = '';
     this.anchorRegenerationIndex = null;
     this.anchorRegenerationComment = '';
+    this.showAdditionalAnchorComment = false;
+    this.additionalAnchorComment = '';
     this.factRegenerationIndex = null;
     this.factRegenerationComment = '';
+    this.showAdditionalFactComment = false;
+    this.additionalFactComment = '';
     this.editableAnchorsJson = '';
     this.editableFactsJson = '';
     this.manualEditsDirty = false;

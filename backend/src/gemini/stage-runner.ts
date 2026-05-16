@@ -456,7 +456,7 @@ function normalizeIncomingPerson(personInput) {
     ...source,
     gender: DATING_TARGET_GENDER_EN,
     name: normalizeOptionalText(source.name || generalInfo.name) || safeString(source.name).trim() || null,
-    surname: normalizeOptionalText(source.surname || generalInfo.surname) || safeString(source.surname).trim() || null,
+    surname: null,
     birth_date: birthDate || null,
     birth_year: parseYear(source.birth_year || source.birthYear || generalInfo.birth_year || birthDate),
     birth_place: birthPlace,
@@ -2151,7 +2151,7 @@ function buildCanon(personInput, profileInput) {
     current_location: person.current_location || null,
     relationship_status: normalizeOptionalText(person.relationship_status),
     name: safeString(person.name).trim() || 'Character',
-    surname: normalizeOptionalText(person.surname),
+    surname: null,
     birth_year: parseYear(person.birth_year || person.birth_date),
     age: resolveAge(person),
     personality_profile: profile,
@@ -3380,9 +3380,12 @@ function normalizeQcReport(raw) {
 }
 
 function buildCanonPromptData(canon) {
+  const sourcePayload =
+    canon.generalInfo && typeof canon.generalInfo === 'object' && !Array.isArray(canon.generalInfo)
+      ? { ...canon.generalInfo, surname: undefined, last_name: undefined, lastName: undefined }
+      : null;
   return {
     name: canon.name || '',
-    surname: canon.surname || '',
     gender: canon.gender || '',
     age: canon.age || null,
     birth_date: canon.birth_date || '',
@@ -3407,7 +3410,7 @@ function buildCanonPromptData(canon) {
     temperament: canon.temperament || '',
     top_traits: canon.top_traits || [],
     personality_profile: canon.personality_profile || {},
-    source_payload: canon.generalInfo || null
+    source_payload: sourcePayload
   };
 }
 
@@ -3693,8 +3696,27 @@ ${JSON.stringify(buildCanonPromptData(canon), null, 2)}
 `.trim();
 }
 
-function buildStage2PromptV2({ canon, anchors, targetFacts, stagePrompt }) {
+function buildFactCommentPromptBlock(factComment) {
+  const comment = safeString(factComment).trim();
+  if (!comment) {
+    return '';
+  }
+  return `
+
+User fact comment:
+${JSON.stringify(comment)}
+
+Comment handling rules:
+- Treat this comment as the user's requested fact direction for this stage.
+- If the comment is compatible with canon and timeline, include several atomic facts that satisfy it directly.
+- Do not copy the comment as one vague fact. Split it into concrete observable facts with year/age, sphere, source, and consequence.
+- If the comment conflicts with canon, follow canon and adapt only the compatible part.
+`.trim();
+}
+
+function buildStage2PromptV2({ canon, anchors, targetFacts, stagePrompt, factComment = '' }) {
   const spheres = LIFE_SPHERES.map((item) => item.key).join(', ');
+  const factCommentBlock = buildFactCommentPromptBlock(factComment);
   return `
 You are expanding the biography into atomic facts for a dense life profile.
 ${BASE_JSON_RULES_EN}
@@ -3748,6 +3770,8 @@ Requirements:
 Stage prompt from the user:
 ${stagePrompt}
 
+${factCommentBlock}
+
 Canon JSON:
 ${JSON.stringify(buildCanonPromptData(canon), null, 2)}
 
@@ -3760,13 +3784,14 @@ ${JSON.stringify(anchors, null, 2)}
 `.trim();
 }
 
-function buildStage2UnderfilledRepairPrompt({ canon, anchors, currentFacts, targetFacts, stagePrompt }) {
+function buildStage2UnderfilledRepairPrompt({ canon, anchors, currentFacts, targetFacts, stagePrompt, factComment = '' }) {
   const spheres = LIFE_SPHERES.map((item) => item.key).join(', ');
   const normalizedFacts = Array.isArray(currentFacts) ? currentFacts : [];
   const coverageBySphere = buildCoverageBySphere(normalizedFacts);
   const weakSpheres = Object.entries(coverageBySphere)
     .filter(([, count]) => count < 8)
     .map(([sphere]) => sphere);
+  const factCommentBlock = buildFactCommentPromptBlock(factComment);
 
   return `
 You are repairing an underfilled stage_2 fact bank.
@@ -3811,6 +3836,8 @@ Critical rules:
 Stage prompt from the user:
 ${stagePrompt}
 
+${factCommentBlock}
+
 Canon JSON:
 ${JSON.stringify(buildCanonPromptData(canon), null, 2)}
 
@@ -3822,13 +3849,14 @@ ${JSON.stringify(normalizedFacts, null, 2)}
 `.trim();
 }
 
-async function repairUnderfilledStage2FactBank({ canon, anchors, currentFacts, targetFacts, stagePrompt, generationType, requestId }) {
+async function repairUnderfilledStage2FactBank({ canon, anchors, currentFacts, targetFacts, stagePrompt, factComment = '', generationType, requestId }) {
   const prompt = buildStage2UnderfilledRepairPrompt({
     canon,
     anchors,
     currentFacts,
     targetFacts,
-    stagePrompt
+    stagePrompt,
+    factComment
   });
 
   const generated = await generateParsedGeminiObject({
@@ -5413,7 +5441,7 @@ Rules:
 - Anchors and fact_bank are the main material. Use their strongest and most characteristic concrete content, not every minor detail.
 - If supporting legend blocks are present, treat them as a secondary helper for texture and detail. Canon, anchors, and fact_bank remain primary. Never let legend blocks override canon identity, names, family core, or occupation.
 - Preserve every significant canon fact.
-- Do not change the protagonist's name or surname from Canon JSON.
+- Use only the protagonist's first name from Canon JSON. Do not use or invent a surname.
 - If you choose to state the protagonist's name in the text, it must exactly match Canon JSON.
 - One continuous first-person English text only. No headings. No lists.
 - If the current version has a clumsy or duplicated opening, rewrite from scratch instead of patching sentence by sentence.
@@ -5726,7 +5754,7 @@ Requirements:
 - Anchors and fact_bank are the main narrative material. Use the strongest portion of them, not a near-complete dump.
 - If supporting legend blocks are present, treat them as a secondary helper for texture and detail. Canon, anchors, and fact_bank remain primary. Never let legend blocks override canon identity, names, family core, or occupation.
 - Write one continuous first-person text with no headings or lists.
-- Do not change the protagonist's name or surname from Canon JSON.
+- Use only the protagonist's first name from Canon JSON. Do not use or invent a surname.
 - If you choose to state the protagonist's name in the text, it must exactly match Canon JSON.
 - Target the same family of outputs as the strong early reference runs: a factual autobiography that moves from childhood to the present through concrete lived episodes, not a literary monologue, a dry report, or a compliance checklist.
 - Ban metaphors, symbolic comparisons, and essay-like framing. Do not write phrases like "сложная система", "эмоциональный центр семьи", "как два спутника на одной орбите", "разные полюса", or "единственная настоящая опора".
@@ -5891,7 +5919,8 @@ async function runStage2({ state, generationType, requestId }) {
     canon: state.canon,
     anchors: state.anchors_timeline,
     targetFacts,
-    stagePrompt: state.stage_prompts.stage_2_fact_bank_prompt
+    stagePrompt: state.stage_prompts.stage_2_fact_bank_prompt,
+    factComment: state.pipeline_meta?.fact_comment
   });
   const generated = await generateParsedGeminiObject({
     prompt,
@@ -5914,6 +5943,7 @@ async function runStage2({ state, generationType, requestId }) {
       currentFacts: factBank,
       targetFacts,
       stagePrompt: state.stage_prompts.stage_2_fact_bank_prompt,
+      factComment: state.pipeline_meta?.fact_comment,
       generationType,
       requestId
     });
@@ -6273,6 +6303,7 @@ async function runStagePipeline({
   stagePromptsInput,
   stage3OutputMode = 'blocks',
   factExtensionPackages = 0,
+  factComment = '',
   pipelineStateInput = null,
   generationType = 'type-pro',
   requestId = ''
@@ -6285,6 +6316,7 @@ async function runStagePipeline({
   const normalizedStagePrompts = normalizeStagePrompts(stagePromptsInput);
   const normalizedStage3OutputMode = normalizeStage3OutputMode(stage3OutputMode);
   const normalizedFactPackages = normalizeFactPackages(factExtensionPackages);
+  const normalizedFactComment = safeString(factComment).trim();
   const normalizedGenerationType = safeString(generationType).trim().toLowerCase() || 'type-pro';
 
   if (normalizedStageKey === 'stage_0_canon') {
@@ -6318,7 +6350,8 @@ async function runStagePipeline({
   state.fact_extension_packages = normalizedFactPackages;
   state.pipeline_meta = {
     ...(state.pipeline_meta || {}),
-    stage_3_output_mode: normalizedStage3OutputMode
+    stage_3_output_mode: normalizedStage3OutputMode,
+    fact_comment: normalizedFactComment || null
   };
   if (!state.canon.personality_profile) {
     state.canon.personality_profile = normalizeProfile(personalityProfile || {});

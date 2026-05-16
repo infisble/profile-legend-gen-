@@ -134,7 +134,9 @@ function normalizeFactsTranslationInput(candidate) {
       age: Number.isFinite(Number(item.age)) ? Math.round(Number(item.age)) : null,
       hook: Boolean(item.hook),
       source: safeString(item.source).trim() || null,
-      source_anchor_id: safeString(item.source_anchor_id).trim() || null
+      source_anchor_id: safeString(item.source_anchor_id).trim() || null,
+      original_text: safeString(item.original_text).trim() || null,
+      translated_text: safeString(item.translated_text).trim() || null
     }))
     .filter((item) => item.text);
 
@@ -158,11 +160,64 @@ function normalizeAnchorsTranslationInput(candidate) {
       event: safeString(item.event).trim(),
       worldview_shift: safeString(item.worldview_shift).trim(),
       outcome: safeString(item.outcome).trim(),
-      hook: Boolean(item.hook)
+      hook: Boolean(item.hook),
+      original_location: safeString(item.original_location).trim() || null,
+      original_event: safeString(item.original_event).trim() || null,
+      original_worldview_shift: safeString(item.original_worldview_shift).trim() || null,
+      original_outcome: safeString(item.original_outcome).trim() || null,
+      translated_location: safeString(item.translated_location).trim() || null,
+      translated_event: safeString(item.translated_event).trim() || null,
+      translated_worldview_shift: safeString(item.translated_worldview_shift).trim() || null,
+      translated_outcome: safeString(item.translated_outcome).trim() || null
     }))
     .filter((item) => item.event || item.worldview_shift || item.outcome);
 
   return normalized.length > 0 ? normalized : null;
+}
+
+function mergeTranslatedFacts(originalFacts, translatedFacts) {
+  return originalFacts.map((original, index) => {
+    const translated = translatedFacts[index] || {};
+    const translatedText = safeString(translated.translated_text || translated.text).trim();
+    const originalText = safeString(original.text).trim();
+    return {
+      ...original,
+      ...translated,
+      text: translatedText || originalText,
+      original_text: safeString(translated.original_text).trim() || originalText,
+      translated_text: translatedText || originalText
+    };
+  });
+}
+
+function mergeTranslatedAnchors(originalAnchors, translatedAnchors) {
+  return originalAnchors.map((original, index) => {
+    const translated = translatedAnchors[index] || {};
+    const translatedLocation = safeString(translated.translated_location || translated.location).trim();
+    const translatedEvent = safeString(translated.translated_event || translated.event).trim();
+    const translatedWorldviewShift = safeString(translated.translated_worldview_shift || translated.worldview_shift).trim();
+    const translatedOutcome = safeString(translated.translated_outcome || translated.outcome).trim();
+    const originalLocation = safeString(original.location).trim();
+    const originalEvent = safeString(original.event).trim();
+    const originalWorldviewShift = safeString(original.worldview_shift).trim();
+    const originalOutcome = safeString(original.outcome).trim();
+    return {
+      ...original,
+      ...translated,
+      location: translatedLocation || originalLocation || null,
+      event: translatedEvent || originalEvent,
+      worldview_shift: translatedWorldviewShift || originalWorldviewShift,
+      outcome: translatedOutcome || originalOutcome,
+      original_location: safeString(translated.original_location).trim() || originalLocation || null,
+      original_event: safeString(translated.original_event).trim() || originalEvent,
+      original_worldview_shift: safeString(translated.original_worldview_shift).trim() || originalWorldviewShift,
+      original_outcome: safeString(translated.original_outcome).trim() || originalOutcome,
+      translated_location: translatedLocation || originalLocation || null,
+      translated_event: translatedEvent || originalEvent,
+      translated_worldview_shift: translatedWorldviewShift || originalWorldviewShift,
+      translated_outcome: translatedOutcome || originalOutcome
+    };
+  });
 }
 
 function parseJsonStrict(raw) {
@@ -184,7 +239,7 @@ Rules:
 - Translate faithfully into ${normalizedTarget}.
 - Preserve first-person voice, tone, paragraph breaks, and the amount of detail.
 - The speaker is a woman. When translating into Russian or another gendered language, keep feminine first-person forms.
-- Preserve names, surnames, dates, years, numbers, cities, countries, brands, model names, and occupations unless they naturally require translation.
+- Preserve first names, dates, years, numbers, cities, countries, brands, model names, and occupations unless they naturally require translation. Do not add or preserve surnames in the translated text.
 - Do not summarize, shorten, censor, moralize, or add new facts.
 - Keep sexual content in the same adult, consensual, legal, and clinical tone. Do not make it more explicit and do not soften it.
 - Keep the result readable and natural.
@@ -397,6 +452,7 @@ app.post('/api/generate-profile', async (req: Request, res: Response) => {
     const generationType = safeString(req.body?.generation_type).trim().toLowerCase() || 'type-pro';
     const stage3OutputMode = safeString(req.body?.stage_3_output_mode).trim().toLowerCase() || 'blocks';
     const providedPipelineState = req.body?.pipeline_state && typeof req.body.pipeline_state === 'object' ? req.body.pipeline_state : null;
+    const factComment = safeString(req.body?.fact_comment).trim();
 
     if (!STAGE_ORDER.includes(runStage)) {
       return res.status(400).json({
@@ -428,6 +484,7 @@ app.post('/api/generate-profile', async (req: Request, res: Response) => {
       stagePromptsInput: stagePrompts || {},
       stage3OutputMode,
       factExtensionPackages,
+      factComment,
       pipelineStateInput: providedPipelineState,
       generationType,
       requestId
@@ -443,6 +500,7 @@ app.post('/api/generate-profile', async (req: Request, res: Response) => {
         person,
         personality_profile: profile,
         fact_extension_packages: factExtensionPackages,
+        fact_comment: factComment || null,
         stage_prompts: stagePrompts,
         stage_3_output_mode: stage3OutputMode,
         run_stage: runStage,
@@ -586,7 +644,8 @@ app.post('/api/translate-output', async (req: Request, res: Response) => {
     }
 
     if (mode === 'facts') {
-      const translatedFacts = normalizeFactsTranslationInput(parsed?.translated_facts || parsed?.facts);
+      const translatedFactsSource = normalizeFactsTranslationInput(parsed?.translated_facts || parsed?.facts);
+      const translatedFacts = translatedFactsSource ? mergeTranslatedFacts(facts, translatedFactsSource) : null;
       if (!translatedFacts) {
         throw new Error('Переводчик не вернул translated_facts.');
       }
@@ -607,7 +666,8 @@ app.post('/api/translate-output', async (req: Request, res: Response) => {
     }
 
     if (mode === 'anchors') {
-      const translatedAnchors = normalizeAnchorsTranslationInput(parsed?.translated_anchors || parsed?.anchors);
+      const translatedAnchorsSource = normalizeAnchorsTranslationInput(parsed?.translated_anchors || parsed?.anchors);
+      const translatedAnchors = translatedAnchorsSource ? mergeTranslatedAnchors(anchors, translatedAnchorsSource) : null;
       if (!translatedAnchors) {
         throw new Error('Переводчик не вернул translated_anchors.');
       }
